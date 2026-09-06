@@ -1,15 +1,17 @@
+# ===========================================================================
+# File: app.py
+# ===========================================================================
 """
 app.py
 ------
 Gampy GO — Gampy's Gridiron Optimizer
-Streamlit UI: DK CSV ingestion, nflverse enrichment, lineup optimizer.
+Streamlit UI: DK CSV ingestion, nflverse enrichment, lineup optimizer,
+and multi-lineup history vault with synchronized sidebar controls and checkmark grid.
 """
 
 import sys
 import os
 
-# Ensure the project root is on sys.path whether running locally or on
-# Streamlit Cloud (where __file__ may resolve differently)
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -36,12 +38,14 @@ st.set_page_config(
 # Session state defaults
 # ---------------------------------------------------------------------------
 for key, default in {
-    "players":        [],
+    "players": [],
     "enriched_stats": {},
-    "last_source":    None,
-    "nfl_seasons":    [],
-    "nfl_loaded":     False,
-    "last_lineup":    None,   # OptimizationResult, persisted across tab switches
+    "last_source": None,
+    "nfl_seasons": [],
+    "nfl_loaded": False,
+    "lineup_history": [],  # List of saved OptimizationResult objects
+    "lock_names": set(),
+    "exclude_names": set(),
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -50,18 +54,18 @@ for key, default in {
 # Constants / helpers
 # ---------------------------------------------------------------------------
 CURRENT_YEAR = 2026
-AVAILABLE_SEASONS = list(range(2019, 2026))   # 2019–2025, CDN has all of these
+AVAILABLE_SEASONS = list(range(2019, 2026))
 
 STRATEGY_LABELS = {
     "best_projected": "Best Projected Score",
-    "best_value":     "Best Value (Pts per $1k)",
+    "best_value": "Best Value (Pts per $1k)",
 }
 
 STATUS_COLOR = {
-    "":    "🟢",
-    "Q":   "🟡",
+    "": "🟢",
+    "Q": "🟡",
     "OUT": "🔴",
-    "IR":  "🔴",
+    "IR": "🔴",
 }
 
 DATA_SOURCE_LEGEND = "★ enriched with nflverse  ◆ Vegas only  · DK avg only"
@@ -69,35 +73,6 @@ DATA_SOURCE_LEGEND = "★ enriched with nflverse  ◆ Vegas only  · DK avg only
 
 def status_badge(s: str) -> str:
     return STATUS_COLOR.get(s, "⚪") + " " + (s if s else "OK")
-
-
-def players_to_df(players: list, enriched_stats: dict) -> pd.DataFrame:
-    rows = []
-    for p in players:
-        d = p.to_dict()
-        ps = enriched_stats.get(p.dk_id)
-        if ps:
-            d["Adj Proj"] = f"{ps.adjusted_projection:.1f}" if ps.adjusted_projection is not None else "-"
-            d["Data"]     = {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(ps.data_source, "·")
-            d["Snap%"]    = f"{ps.avg_snap_pct*100:.0f}%" if ps.avg_snap_pct is not None else "-"
-            d["Targets"]  = f"{ps.avg_targets:.1f}" if ps.avg_targets is not None else "-"
-            d["Tgt Share"]= f"{ps.avg_target_share*100:.1f}%" if ps.avg_target_share is not None else "-"
-            d["WOPR"]     = f"{ps.avg_wopr:.2f}" if ps.avg_wopr is not None else "-"
-            d["Carries"]  = f"{ps.avg_carries:.1f}" if ps.avg_carries is not None else "-"
-            d["Rush Yds"] = f"{ps.avg_rushing_yards:.1f}" if ps.avg_rushing_yards is not None else "-"
-            d["Implied"]  = f"{ps.implied_total:.1f}" if ps.implied_total is not None else "-"
-            d["Total"]    = f"{ps.total_line:.1f}" if ps.total_line is not None else "-"
-            d["Home"]     = ("🏠" if ps.is_home else "✈") if ps.is_home is not None else "-"
-        else:
-            for col in ["Adj Proj","Data","Snap%","Targets","Tgt Share","WOPR","Carries","Rush Yds","Implied","Total","Home"]:
-                d[col] = "-"
-        rows.append(d)
-
-    df = pd.DataFrame(rows)
-    base_cols = ["Name", "Position", "Team", "Opponent", "Salary", "Adj Proj", "Projection", "Value", "Status", "Data"]
-    stat_cols = ["Snap%", "Targets", "Tgt Share", "WOPR", "Carries", "Rush Yds", "Implied", "Total", "Home"]
-    all_cols  = base_cols + stat_cols
-    return df[[c for c in all_cols if c in df.columns]]
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +91,7 @@ with st.sidebar:
     st.subheader("1. Load Player Pool")
     source = st.radio("Data source", ["Upload CSV", "DraftKings URL"], index=0)
 
-    players    = []
+    players = []
     load_error = None
 
     if source == "Upload CSV":
@@ -128,9 +103,13 @@ with st.sidebar:
         if uploaded:
             try:
                 players = load_from_upload(uploaded)
-                st.session_state.players       = players
-                st.session_state.nfl_loaded    = False   # reset enrichment on new file
+                st.session_state.players = players
+                st.session_state.nfl_loaded = False
                 st.session_state.enriched_stats = {}
+                st.session_state.lineup_history = []
+                st.session_state.lock_names = set()
+                st.session_state.exclude_names = {"Tay Martin"} if any(
+                    p.name == "Tay Martin" for p in players) else set()
             except Exception as e:
                 load_error = str(e)
     else:
@@ -144,9 +123,13 @@ with st.sidebar:
                 if err:
                     load_error = err
                 else:
-                    st.session_state.players        = fetched
-                    st.session_state.nfl_loaded     = False
+                    st.session_state.players = fetched
+                    st.session_state.nfl_loaded = False
                     st.session_state.enriched_stats = {}
+                    st.session_state.lineup_history = []
+                    st.session_state.lock_names = set()
+                    st.session_state.exclude_names = {"Tay Martin"} if any(
+                        p.name == "Tay Martin" for p in fetched) else set()
 
     if load_error:
         st.error(f"❌ {load_error}")
@@ -159,18 +142,17 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ---- 2. nflverse Stats ----
+    # ---- 2. NFL Stats (nflverse) ----
     st.subheader("2. NFL Stats (nflverse)")
 
     if not nfl_available():
         st.warning("nfl_data_py not installed. Run: pip install nfl-data-py")
-        enriched_stats = {}
     else:
         seasons_selected = st.multiselect(
             "Stat seasons to include",
             options=AVAILABLE_SEASONS,
             default=[2024, 2025],
-            help="Select one or more past seasons. More seasons = more stable averages.",
+            help="Select one or more past seasons for stable averages.",
         )
 
         recent_weeks = st.slider(
@@ -178,20 +160,24 @@ with st.sidebar:
             min_value=2,
             max_value=10,
             value=4,
-            help="How many recent weeks to average for player form stats.",
         )
 
-        col_load, col_clear = st.columns(2)
-        load_nfl_btn  = col_load.button(
-            "Load Stats",
-            type="primary",
-            disabled=not players or not seasons_selected,
+        min_snap_slider = st.slider(
+            "Minimum Snap Rate %",
+            min_value=0.0,
+            max_value=100.0,
+            value=0.0,
+            step=5.0,
         )
+        min_snap_fraction = min_snap_slider / 100.0 if min_snap_slider > 0 else None
+
+        col_load, col_clear = st.columns(2)
+        load_nfl_btn = col_load.button("Load Stats", type="primary", disabled=not players or not seasons_selected)
         clear_nfl_btn = col_clear.button("Clear Cache")
 
         if clear_nfl_btn:
             clear_cache()
-            st.session_state.nfl_loaded     = False
+            st.session_state.nfl_loaded = False
             st.session_state.enriched_stats = {}
             st.toast("Cache cleared")
 
@@ -201,11 +187,16 @@ with st.sidebar:
                 progress.progress(25, text="Fetching weekly stats...")
                 progress.progress(50, text="Fetching snap counts...")
                 progress.progress(75, text="Fetching schedules...")
-                enriched = enrich_players(players, seasons_selected, recent_weeks=recent_weeks)
+                enriched = enrich_players(
+                    players,
+                    seasons_selected,
+                    recent_weeks=recent_weeks,
+                    min_snap_pct=min_snap_fraction
+                )
                 progress.progress(100, text="Done!")
                 st.session_state.enriched_stats = enriched
-                st.session_state.nfl_loaded     = True
-                st.session_state.nfl_seasons    = seasons_selected
+                st.session_state.nfl_loaded = True
+                st.session_state.nfl_seasons = seasons_selected
                 progress.empty()
                 matched = sum(1 for ps in enriched.values() if ps.data_source == "enriched")
                 st.success(f"✅ Stats loaded — {matched} players enriched")
@@ -213,15 +204,13 @@ with st.sidebar:
                 progress.empty()
                 st.error(f"❌ Stats load failed: {e}")
 
-        enriched_stats = st.session_state.enriched_stats
-
         if st.session_state.nfl_loaded:
             seasons_str = ", ".join(str(s) for s in st.session_state.nfl_seasons)
             st.caption(f"Using seasons: {seasons_str} | {recent_weeks}wk form")
 
     st.markdown("---")
 
-    # ---- 3. Optimizer Settings ----
+    # ---- 3. Optimizer Settings & Roster Constraints ----
     st.subheader("3. Optimizer Settings")
 
     strategy = st.selectbox(
@@ -230,30 +219,33 @@ with st.sidebar:
         format_func=lambda k: STRATEGY_LABELS[k],
     )
 
-    exclude_injured      = st.checkbox("Exclude OUT / IR players",          value=True)
-    exclude_questionable = st.checkbox("Exclude Questionable (Q) players",  value=False)
+    exclude_injured = st.checkbox("Exclude OUT / IR players", value=True)
+    exclude_questionable = st.checkbox("Exclude Questionable (Q) players", value=False)
 
-    st.markdown("**Lock players** (force into lineup)")
-    lock_input = st.text_area(
-        "lock_players",
-        height=80,
-        placeholder="Josh Allen\nJa'Marr Chase",
-        label_visibility="collapsed",
-    )
-    lock_names = {n.strip() for n in lock_input.splitlines() if n.strip()}
+    player_names_sorted = sorted([p.name for p in players]) if players else []
 
-    st.markdown("**Exclude players**")
-    exclude_input = st.text_area(
-        "exclude_players",
-        height=80,
-        placeholder="Bijan Robinson",
-        label_visibility="collapsed",
+    # Sidebar multiselects bound to session state
+    sidebar_locks = st.multiselect(
+        "🔒 Lock Players",
+        options=player_names_sorted,
+        default=list(st.session_state.lock_names),
+        key="sb_locks",
+        help="Selected players are guaranteed a spot in generated lineups.",
     )
-    exclude_names = {n.strip() for n in exclude_input.splitlines() if n.strip()}
+    # Sync back immediately
+    st.session_state.lock_names = set(sidebar_locks)
+
+    sidebar_excludes = st.multiselect(
+        "❌ Exclude Players (Fades)",
+        options=player_names_sorted,
+        default=list(st.session_state.exclude_names),
+        key="sb_excludes",
+        help="Selected players will be completely removed from optimization pools.",
+    )
+    st.session_state.exclude_names = set(sidebar_excludes)
 
     st.markdown("---")
-    run_btn = st.button("🚀 Generate Lineup", type="primary", disabled=not players)
-
+    run_btn = st.button("🚀 Generate New Lineup Alternative", type="primary", disabled=not players)
 
 # ---------------------------------------------------------------------------
 # Main area
@@ -264,203 +256,234 @@ if not players:
     st.info("👈 Load a DraftKings player CSV using the sidebar to get started.")
     st.stop()
 
-tab_lineup, tab_pool = st.tabs(["📋 Recommended Lineup", "📊 Player Pool"])
-
-# ---------------------------------------------------------------------------
-# Run optimizer — outside tabs so result is in session state before either
-# tab renders. This ensures My Picks is available immediately in pool tab.
-# ---------------------------------------------------------------------------
+# Handle generation trigger
 if run_btn:
-    with st.spinner("Optimizing lineup..."):
+    with st.spinner("Optimizing new lineup alternative..."):
         result = optimize(
             players,
             strategy=strategy,
-            exclude_names=exclude_names,
-            lock_names=lock_names,
+            exclude_names=st.session_state.exclude_names,
+            lock_names=st.session_state.lock_names,
             exclude_injured=exclude_injured,
             exclude_questionable=exclude_questionable,
-            enriched_stats=enriched_stats,
+            enriched_stats=st.session_state.enriched_stats,
         )
     if result.feasible:
-        st.session_state.last_lineup = result
+        st.session_state.lineup_history.insert(0, result)
+        st.toast(f"Generated lineup #{len(st.session_state.lineup_history)}! ({result.total_projection:.1f} pts)")
     else:
-        st.error(f"❌ {result.message}")
-        st.session_state.last_lineup = None
+        st.error(f"❌ Optimization failed: {result.message}")
+
+# ---------------------------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------------------------
+tab_lineup, tab_pool = st.tabs(["📋 Generated Lineups Vault", "📊 Player Pool View"])
 
 # ---------------------------------------------------------------------------
 # Player Pool tab
 # ---------------------------------------------------------------------------
 with tab_pool:
-    st.subheader("Player Pool")
+    st.subheader("Player Pool & Constraint Grid")
+    st.markdown(
+        "Check **Lock** or **Exclude** in the table below (or use the sidebar controls) — changes sync automatically.")
 
-    # My Picks toggle — only shown when a lineup has been generated
-    last_lineup = st.session_state.last_lineup
-    picked_ids  = {}   # dk_id -> slot string
-    if last_lineup and last_lineup.feasible:
-        picked_ids = {p.dk_id: slot for p, slot in last_lineup.lineup}
-
-    pool_col1, pool_col2 = st.columns([3, 1])
-    with pool_col2:
-        my_picks_on = st.toggle(
-            "🏈 My Picks only",
-            value=False,
-            disabled=not picked_ids,
-            help="Filter the pool to show only players in your current lineup",
-        )
+    latest_lineup = st.session_state.lineup_history[0] if st.session_state.lineup_history else None
+    picked_ids = {p.dk_id: slot for p, slot in latest_lineup.lineup} if latest_lineup and latest_lineup.feasible else {}
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        pos_filter = st.multiselect("Position", ["QB","RB","WR","TE","DST"], default=[], placeholder="All")
+        pos_filter = st.multiselect("Position", ["QB", "RB", "WR", "TE", "DST"], default=[], placeholder="All")
     with c2:
-        status_filter = st.multiselect("Status", ["OK","Q","OUT","IR"], default=[], placeholder="All")
+        status_filter = st.multiselect("Status", ["OK", "Q", "OUT", "IR"], default=[], placeholder="All")
     with c3:
         team_options = sorted({p.team for p in players if p.team})
         team_filter = st.multiselect("Team", team_options, default=[], placeholder="All teams")
     with c4:
         sal_min, sal_max = st.slider("Salary", 2500, 10000, (2500, 10000), 100, format="$%d")
 
-    visible = players
+    filtered_players = players
+    if pos_filter:
+        filtered_players = [p for p in filtered_players if p.position in pos_filter]
+    if status_filter:
+        filtered_players = [
+            p for p in filtered_players
+            if (p.status if p.status else "OK") in status_filter
+               or p.status in [("" if s == "OK" else s) for s in status_filter]
+        ]
+    if team_filter:
+        filtered_players = [p for p in filtered_players if p.team in team_filter]
+    filtered_players = [p for p in filtered_players if sal_min <= p.salary <= sal_max]
 
-    # My Picks filter takes priority over other filters
-    if my_picks_on and picked_ids:
-        visible = [p for p in visible if p.dk_id in picked_ids]
-    else:
-        if pos_filter:
-            visible = [p for p in visible if p.position in pos_filter]
-        if status_filter:
-            visible = [
-                p for p in visible
-                if (p.status if p.status else "OK") in status_filter
-                or p.status in [("" if s == "OK" else s) for s in status_filter]
-            ]
-        if team_filter:
-            visible = [p for p in visible if p.team in team_filter]
-        visible = [p for p in visible if sal_min <= p.salary <= sal_max]
+    pool_rows = []
+    for p in filtered_players:
+        ps = st.session_state.enriched_stats.get(p.dk_id)
 
-    df_pool = players_to_df(visible, enriched_stats)
+        in_lineup_tag = "🏈 In Lineup" if p.dk_id in picked_ids else ""
 
-    # Add Slot column when My Picks is on
-    if my_picks_on and picked_ids:
-        df_pool.insert(0, "Slot", df_pool.apply(
-            lambda row: picked_ids.get(
-                next((p.dk_id for p in visible if p.name == row["Name"]), None), ""
-            ), axis=1
-        ))
+        row_dict = {
+            "Lock 🔒": p.name in st.session_state.lock_names,
+            "Exclude ❌": p.name in st.session_state.exclude_names,
+            "State": in_lineup_tag,
+            "Name": p.name,
+            "Pos": p.position,
+            "Team": p.team,
+            "Opp": p.opponent,
+            "Salary": f"${p.salary:,}",
+            "DK Avg": p.projection,
+            "Adj Proj": f"{ps.adjusted_projection:.1f}" if ps and ps.adjusted_projection is not None else "-",
+            "Value": f"{p.value:.2f}",
+            "Injury": status_badge(p.status),
+            "Data": {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(ps.data_source, "·") if ps else "·",
+            "Snap%": f"{ps.avg_snap_pct * 100:.0f}%" if ps and ps.avg_snap_pct is not None else "-",
+            "Targets": f"{ps.avg_targets:.1f}" if ps and ps.avg_targets is not None else "-",
+            "Implied": f"{ps.implied_total:.1f}" if ps and ps.implied_total is not None else "-",
+        }
+        pool_rows.append(row_dict)
 
-    # Highlight picked players in full pool view
-    if not my_picks_on and picked_ids:
-        picked_names = {p.name for p in players if p.dk_id in picked_ids}
-        df_pool.insert(0, "✓", df_pool["Name"].apply(
-            lambda n: "🏈" if n in picked_names else ""
-        ))
+    df_pool = pd.DataFrame(pool_rows)
 
-    if "Status" in df_pool.columns:
-        df_pool["Status"] = df_pool["Status"].apply(lambda s: status_badge(s if s else ""))
-
-    col_config = {
-        "Salary":     st.column_config.TextColumn("Salary"),
-        "Projection": st.column_config.NumberColumn("DK Avg",  format="%.1f"),
-        "Adj Proj":   st.column_config.TextColumn("Adj Proj", help="Projection adjusted with nflverse stats"),
-        "Value":      st.column_config.NumberColumn("Value",   format="%.2f", help="Pts per $1k"),
-        "Data":       st.column_config.TextColumn("Data",     help=DATA_SOURCE_LEGEND, width=60),
-    }
-    if my_picks_on:
-        col_config["Slot"] = st.column_config.TextColumn("Slot", width=70)
-    else:
-        col_config["✓"] = st.column_config.TextColumn("✓", width=40)
-
-    st.dataframe(
+    edited_df = st.data_editor(
         df_pool,
         use_container_width=True,
         hide_index=True,
-        column_config=col_config,
+        column_config={
+            "Lock 🔒": st.column_config.CheckboxColumn("Lock 🔒", width=60, required=True),
+            "Exclude ❌": st.column_config.CheckboxColumn("Exclude ❌", width=70, required=True),
+            "State": st.column_config.TextColumn("Lineup Status", width=100, disabled=True),
+            "Name": st.column_config.TextColumn("Name", disabled=True),
+            "Pos": st.column_config.TextColumn("Pos", disabled=True),
+            "Team": st.column_config.TextColumn("Team", disabled=True),
+            "Opp": st.column_config.TextColumn("Opp", disabled=True),
+            "Salary": st.column_config.TextColumn("Salary", disabled=True),
+            "DK Avg": st.column_config.NumberColumn("DK Avg", format="%.1f", disabled=True),
+            "Adj Proj": st.column_config.TextColumn("Adj Proj", disabled=True),
+            "Value": st.column_config.TextColumn("Value", disabled=True),
+            "Injury": st.column_config.TextColumn("Injury", disabled=True),
+            "Data": st.column_config.TextColumn("Data", disabled=True),
+            "Snap%": st.column_config.TextColumn("Snap%", disabled=True),
+            "Targets": st.column_config.TextColumn("Targets", disabled=True),
+            "Implied": st.column_config.TextColumn("Implied", disabled=True),
+        },
+        disabled=[col for col in df_pool.columns if col not in ["Lock 🔒", "Exclude ❌"]]
     )
 
-    caption = f"Showing {len(visible)} of {len(players)} players  |  {DATA_SOURCE_LEGEND}"
-    if my_picks_on:
-        caption = f"My Picks — {len(visible)} players  |  {DATA_SOURCE_LEGEND}"
-    elif picked_ids:
-        caption += "  |  🏈 = in your current lineup"
-    st.caption(caption)
+    # Sync table edits back to session state sets
+    new_locks = set(st.session_state.lock_names)
+    new_excludes = set(st.session_state.exclude_names)
+
+    for _, row in edited_df.iterrows():
+        p_name = row["Name"]
+        if row["Lock 🔒"]:
+            new_locks.add(p_name)
+        else:
+            new_locks.discard(p_name)
+
+        if row["Exclude ❌"]:
+            new_excludes.add(p_name)
+        else:
+            new_excludes.discard(p_name)
+
+    if new_locks != st.session_state.lock_names or new_excludes != st.session_state.exclude_names:
+        st.session_state.lock_names = new_locks
+        st.session_state.exclude_names = new_excludes
+        st.rerun()
+
+    l_count = len(st.session_state.lock_names)
+    e_count = len(st.session_state.exclude_names)
+    st.caption(
+        f"Showing {len(filtered_players)} of {len(players)} players  |  🔒 Locked: {l_count}  |  ❌ Excluded: {e_count}  |  {DATA_SOURCE_LEGEND}")
 
 # ---------------------------------------------------------------------------
-# Lineup tab
+# Lineup tab (Lineup History Vault & Comparison)
 # ---------------------------------------------------------------------------
 with tab_lineup:
-    result = st.session_state.last_lineup
-    if result is None:
-        st.info("Configure settings in the sidebar and click **Generate Lineup**.")
+    history = st.session_state.lineup_history
+    if not history:
+        st.info("No lineups generated yet. Configure your locks/fades and click **🚀 Generate New Lineup Alternative**.")
     else:
-        remaining = SALARY_CAP - result.total_salary
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Strategy",        STRATEGY_LABELS[strategy])
-        c2.metric("Projected Score", f"{result.total_projection:.1f} pts")
-        c3.metric("Total Salary",    f"${result.total_salary:,}")
-        c4.metric("Cap Remaining",   f"${remaining:,}")
+        st.subheader(f"Generated Lineup Alternatives ({len(history)} saved)")
+        st.markdown("Compare your generated options below. Keep your preferred build or promote a previous run.")
 
-        if enriched_stats:
-            enriched_count = sum(
-                1 for p, _ in result.lineup
-                if enriched_stats.get(p.dk_id) and enriched_stats[p.dk_id].data_source == "enriched"
-            )
-            st.caption(f"★ {enriched_count}/9 players enriched with nflverse stats")
+        if st.button("🗑️ Clear History"):
+            st.session_state.lineup_history = []
+            st.rerun()
 
-        st.markdown("---")
+        for idx, res in enumerate(history):
+            run_num = len(history) - idx
+            is_latest = (idx == 0)
+            prefix = "⭐ [LATEST ACTIVE]" if is_latest else f"Alternative #{run_num}"
 
-        rows = result.to_display_rows()
-        df_lineup = pd.DataFrame(rows)
+            remaining = SALARY_CAP - res.total_salary
+            card_title = f"{prefix} — Proj: **{res.total_projection:.1f} pts** | Salary: **${res.total_salary:,}**"
 
-        def highlight_total(row):
-            if row["Slot"] == "TOTAL":
-                return ["font-weight: bold; background-color: #1e3a5f; color: white"] * len(row)
-            return [""] * len(row)
+            with st.expander(card_title, expanded=is_latest):
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Projected Score", f"{res.total_projection:.1f} pts")
+                m2.metric("Total Salary", f"${res.total_salary:,}")
+                m3.metric("Cap Remaining", f"${remaining:,}")
 
-        st.dataframe(
-            df_lineup.style.apply(highlight_total, axis=1),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Slot":   st.column_config.TextColumn("Slot",    width=70),
-                "Player": st.column_config.TextColumn("Player",  width=180),
-                "Pos":    st.column_config.TextColumn("Pos",     width=55),
-                "Team":   st.column_config.TextColumn("Team",    width=55),
-                "Opp":    st.column_config.TextColumn("Opp",     width=55),
-                "Salary": st.column_config.TextColumn("Salary",  width=85),
-                "Proj":   st.column_config.TextColumn("Proj",    width=65, help="Adjusted projection"),
-                "DK Avg": st.column_config.TextColumn("DK Avg",  width=65, help="DraftKings AvgPointsPerGame"),
-                "Value":  st.column_config.TextColumn("Value",   width=65),
-                "Status": st.column_config.TextColumn("Status",  width=65),
-                "Data":   st.column_config.TextColumn("Data",    width=50, help=DATA_SOURCE_LEGEND),
-            },
-        )
+                if not is_latest:
+                    if st.button(f"Make Active / Promote #{run_num}", key=f"promote_{idx}"):
+                        st.session_state.lineup_history.pop(idx)
+                        st.session_state.lineup_history.insert(0, res)
+                        st.rerun()
 
-        st.markdown("---")
-        st.subheader("Why these players?")
+                st.markdown("---")
 
-        for player, slot in result.lineup:
-            ps      = enriched_stats.get(player.dk_id)
-            badge   = STATUS_COLOR.get(player.status, "⚪")
-            adj_str = ""
-            ctx_str = ""
+                rows = res.to_display_rows()
+                df_lineup = pd.DataFrame(rows)
 
-            if ps:
-                if ps.adjusted_projection is not None and ps.data_source != "dk_only":
-                    diff    = ps.adjusted_projection - player.projection
-                    sign    = "+" if diff >= 0 else ""
-                    adj_str = f" → adj **{ps.adjusted_projection:.1f}** ({sign}{diff:.1f})"
-                if ps.implied_total is not None:
-                    home_str = "home" if ps.is_home else "away"
-                    ctx_str  = f" | {home_str}, implied {ps.implied_total:.1f}"
-                if ps.avg_target_share is not None and player.position in ("WR","TE"):
-                    ctx_str += f", {ps.avg_target_share*100:.0f}% tgt share"
-                if ps.avg_snap_pct is not None and player.position in ("RB","WR","TE"):
-                    ctx_str += f", {ps.avg_snap_pct*100:.0f}% snap"
 
-            st.markdown(
-                f"**{slot} — {player.name}** ({player.team} vs {player.opponent}) "
-                f"| ${player.salary:,} | DK avg {player.projection:.1f} pts{adj_str}"
-                f"{ctx_str} {badge}"
-            )
+                def highlight_total(row):
+                    if row["Slot"] == "TOTAL":
+                        return ["font-weight: bold; background-color: #1e3a5f; color: white"] * len(row)
+                    return [""] * len(row)
+
+
+                st.dataframe(
+                    df_lineup.style.apply(highlight_total, axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Slot": st.column_config.TextColumn("Slot", width=70),
+                        "Player": st.column_config.TextColumn("Player", width=180),
+                        "Pos": st.column_config.TextColumn("Pos", width=55),
+                        "Team": st.column_config.TextColumn("Team", width=55),
+                        "Opp": st.column_config.TextColumn("Opp", width=55),
+                        "Salary": st.column_config.TextColumn("Salary", width=85),
+                        "Proj": st.column_config.TextColumn("Proj", width=65, help="Adjusted projection"),
+                        "DK Avg": st.column_config.TextColumn("DK Avg", width=65, help="DraftKings AvgPointsPerGame"),
+                        "Value": st.column_config.TextColumn("Value", width=65),
+                        "Status": st.column_config.TextColumn("Status", width=65),
+                        "Data": st.column_config.TextColumn("Data", width=50, help=DATA_SOURCE_LEGEND),
+                    },
+                )
+
+                st.markdown("---")
+                for player, slot in res.lineup:
+                    ps = st.session_state.enriched_stats.get(player.dk_id)
+                    badge = STATUS_COLOR.get(player.status, "⚪")
+                    adj_str = ""
+                    ctx_str = ""
+
+                    if ps:
+                        if ps.adjusted_projection is not None and ps.data_source != "dk_only":
+                            diff = ps.adjusted_projection - player.projection
+                            sign = "+" if diff >= 0 else ""
+                            adj_str = f" → adj **{ps.adjusted_projection:.1f}** ({sign}{diff:.1f})"
+                        if ps.implied_total is not None:
+                            home_str = "home" if ps.is_home else "away"
+                            ctx_str = f" | {home_str}, implied {ps.implied_total:.1f}"
+                        if ps.avg_target_share is not None and player.position in ("WR", "TE"):
+                            ctx_str += f", {ps.avg_target_share * 100:.0f}% tgt share"
+                        if ps.avg_snap_pct is not None and player.position in ("RB", "WR", "TE"):
+                            ctx_str += f", {ps.avg_snap_pct * 100:.0f}% snap"
+
+                    st.caption(
+                        f"• **{slot} — {player.name}** ({player.team} vs {player.opponent}) "
+                        f"| ${player.salary:,} | DK avg {player.projection:.1f} pts{adj_str}"
+                        f"{ctx_str} {badge}"
+                    )
 
 # ---------------------------------------------------------------------------
 # Footer

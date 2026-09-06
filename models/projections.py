@@ -1,3 +1,6 @@
+# ===========================================================================
+# File: models/projections.py
+# ===========================================================================
 """
 models/projections.py
 ---------------------
@@ -275,6 +278,7 @@ def enrich_players(
     players: list,
     seasons: list[int],
     recent_weeks: int = 4,
+    min_snap_pct: Optional[float] = None,
 ) -> dict:
     """
     Enrich a list of Player objects with nflverse stats.
@@ -332,6 +336,11 @@ def enrich_players(
         snap_row = _find_snap_row(player.name, player.team, snap_data)
         if snap_row is not None:
             stats.avg_snap_pct = _safe_float(snap_row, "avg_snap_pct")
+
+        # --- Minimum snap rate threshold filter ---
+        if min_snap_pct is not None and stats.avg_snap_pct is not None:
+            if stats.avg_snap_pct < min_snap_pct:
+                continue
 
         # --- Vegas context ---
         try:
