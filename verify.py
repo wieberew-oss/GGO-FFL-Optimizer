@@ -4,7 +4,7 @@ Run: python verify.py  (from the FFL folder)
 """
 import sys, os, warnings
 warnings.filterwarnings("ignore")
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 print("=" * 60)
 print("Gampy GO - Verification Script")

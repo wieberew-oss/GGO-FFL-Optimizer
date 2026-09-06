@@ -8,7 +8,11 @@ Streamlit UI: DK CSV ingestion, nflverse enrichment, lineup optimizer.
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(__file__))
+# Ensure the project root is on sys.path whether running locally or on
+# Streamlit Cloud (where __file__ may resolve differently)
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 import pandas as pd
 import streamlit as st
