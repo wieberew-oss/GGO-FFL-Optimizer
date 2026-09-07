@@ -1,0 +1,422 @@
+[
+    {
+        "rank": 1,
+        "team": "Los Angeles Rams",
+        "returning_starters": 7,
+        "key_additions": [
+            "Myles Garrett",
+            "Trent McDuffie",
+            "Aaron Donald"
+        ],
+        "projected_tier": "Elite",
+        "ffl_rating": 98,
+        "outlook": "Massive influx of historic talent makes them the premier defensive unit.",
+        "vs_run_projection": "Elite (Top 3)",
+        "vs_pass_projection": "Elite (Top 3)"
+    },
+    {
+        "rank": 2,
+        "team": "Houston Texans",
+        "returning_starters": 9,
+        "key_additions": [
+            "Depth pieces"
+        ],
+        "projected_tier": "Elite",
+        "ffl_rating": 95,
+        "outlook": "High continuity with Will Anderson Jr., Danielle Hunter, and Derek Stingley Jr.",
+        "vs_run_projection": "Elite (Top 3)",
+        "vs_pass_projection": "Elite (Top 3)"
+    },
+    {
+        "rank": 3,
+        "team": "Seattle Seahawks",
+        "returning_starters": 8,
+        "key_additions": [
+            "Rotational front-7 pieces"
+        ],
+        "projected_tier": "Elite",
+        "ffl_rating": 94,
+        "outlook": "Leonard Williams and Byron Murphy II anchor a ferocious front.",
+        "vs_run_projection": "Elite (Top 3)",
+        "vs_pass_projection": "Elite (Top 3)"
+    },
+    {
+        "rank": 4,
+        "team": "Denver Broncos",
+        "returning_starters": 8,
+        "key_additions": [
+            "Secondary depth"
+        ],
+        "projected_tier": "Upper-Tier",
+        "ffl_rating": 91,
+        "outlook": "Pat Surtain II and Vance Joseph's scheme guarantee elite pressure and lockdown coverage.",
+        "vs_run_projection": "Strong (Top 8)",
+        "vs_pass_projection": "Strong (Top 8)"
+    },
+    {
+        "rank": 5,
+        "team": "San Francisco 49ers",
+        "returning_starters": 7,
+        "key_additions": [
+            "Rookie front-7 help"
+        ],
+        "projected_tier": "Upper-Tier",
+        "ffl_rating": 90,
+        "outlook": "Perennial defensive powerhouse with strong foundational continuity.",
+        "vs_run_projection": "Strong (Top 8)",
+        "vs_pass_projection": "Strong (Top 8)"
+    },
+    {
+        "rank": 6,
+        "team": "Baltimore Ravens",
+        "returning_starters": 7,
+        "key_additions": [
+            "Linebacker depth"
+        ],
+        "projected_tier": "Upper-Tier",
+        "ffl_rating": 89,
+        "outlook": "Always disciplined, high turnover-forced unit under Mike Macdonald's legacy scheme.",
+        "vs_run_projection": "Strong (Top 8)",
+        "vs_pass_projection": "Strong (Top 8)"
+    },
+    {
+        "rank": 7,
+        "team": "Pittsburgh Steelers",
+        "returning_starters": 8,
+        "key_additions": [
+            "Sub-package defensive backs"
+        ],
+        "projected_tier": "Upper-Tier",
+        "ffl_rating": 88,
+        "outlook": "TJ Watt leads an inherently high-floor fantasy defense.",
+        "vs_run_projection": "Strong (Top 8)",
+        "vs_pass_projection": "Strong (Top 8)"
+    },
+    {
+        "rank": 8,
+        "team": "Buffalo Bills",
+        "returning_starters": 7,
+        "key_additions": [
+            "Safety help"
+        ],
+        "projected_tier": "Upper-Tier",
+        "ffl_rating": 87,
+        "outlook": "Solid foundation despite minor personnel rotations.",
+        "vs_run_projection": "Strong (Top 8)",
+        "vs_pass_projection": "Strong (Top 8)"
+    },
+    {
+        "rank": 9,
+        "team": "Minnesota Vikings",
+        "returning_starters": 6,
+        "key_additions": [
+            "Versatile blitzers"
+        ],
+        "projected_tier": "High-Variance / Disrupters",
+        "ffl_rating": 86,
+        "outlook": "Brian Flores' exotic blitz packages create elite fantasy ceilings.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 10,
+        "team": "Detroit Lions",
+        "returning_starters": 7,
+        "key_additions": [
+            "Pass rush depth"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 85,
+        "outlook": "Physical front that excels in stopping the run and creating pressure.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 11,
+        "team": "Green Bay Packers",
+        "returning_starters": 8,
+        "key_additions": [
+            "Secondary starters"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 84,
+        "outlook": "Young core maturing nicely with high snap continuity.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 12,
+        "team": "Philadelphia Eagles",
+        "returning_starters": 6,
+        "key_additions": [
+            "Rookie edge talent"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 83,
+        "outlook": "Transitioning some pieces but retains star defensive tackle power.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 13,
+        "team": "Kansas City Chiefs",
+        "returning_starters": 7,
+        "key_additions": [
+            "Rotational pieces"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 82,
+        "outlook": "Spagnuolo's scheme maximizes returning defensive talent.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 14,
+        "team": "Miami Dolphins",
+        "returning_starters": 6,
+        "key_additions": [
+            "Linebacker additions"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 81,
+        "outlook": "Speedy defense capable of splash plays.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 15,
+        "team": "Dallas Cowboys",
+        "returning_starters": 6,
+        "key_additions": [
+            "Interior line help"
+        ],
+        "projected_tier": "Solid Starter",
+        "ffl_rating": 80,
+        "outlook": "Micah Parsons anchors a high-upside unit.",
+        "vs_run_projection": "Above Average",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 16,
+        "team": "Cincinnati Bengals",
+        "returning_starters": 5,
+        "key_additions": [
+            "Jonathan Allen",
+            "Dexter Lawrence",
+            "Cashius Howell"
+        ],
+        "projected_tier": "Bounce-Back Unit",
+        "ffl_rating": 79,
+        "outlook": "Massive interior upgrade transforms a previously porous defense.",
+        "vs_run_projection": "Elite (Interior Fortified)",
+        "vs_pass_projection": "Above Average"
+    },
+    {
+        "rank": 17,
+        "team": "Cleveland Browns",
+        "returning_starters": 6,
+        "key_additions": [
+            "Defensive depth"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 78,
+        "outlook": "Solid foundational discipline remaining post-offseason.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 18,
+        "team": "New York Jets",
+        "returning_starters": 7,
+        "key_additions": [
+            "Rotational depth"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 77,
+        "outlook": "Talented individual pieces with dependable core returners.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 19,
+        "team": "Tampa Bay Buccaneers",
+        "returning_starters": 7,
+        "key_additions": [
+            "Secondary pieces"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 76,
+        "outlook": "Bowles' aggressive blitz style keeps floors stable.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 20,
+        "team": "Chicago Bears",
+        "returning_starters": 8,
+        "key_additions": [
+            "Edge rushers"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 75,
+        "outlook": "Strong continuity building into an ascending unit.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 21,
+        "team": "Indianapolis Colts",
+        "returning_starters": 6,
+        "key_additions": [
+            "Secondary help"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 74,
+        "outlook": "Balanced unit with decent takeaway rates.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 22,
+        "team": "Jacksonville Jaguars",
+        "returning_starters": 6,
+        "key_additions": [
+            "Linebacker depth"
+        ],
+        "projected_tier": "Streaming Option",
+        "ffl_rating": 73,
+        "outlook": "Looking to stabilize consistency under new schemes.",
+        "vs_run_projection": "Average",
+        "vs_pass_projection": "Average / Streamable"
+    },
+    {
+        "rank": 23,
+        "team": "Los Angeles Chargers",
+        "returning_starters": 6,
+        "key_additions": [
+            "Defensive line pieces"
+        ],
+        "projected_tier": "Deep League / Matchup",
+        "ffl_rating": 71,
+        "outlook": "Disciplined coaching keeps them competitive.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 24,
+        "team": "Atlanta Falcons",
+        "returning_starters": 7,
+        "key_additions": [
+            "Pass rush pieces"
+        ],
+        "projected_tier": "Deep League / Matchup",
+        "ffl_rating": 70,
+        "outlook": "Steady returners providing dependable floor.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 25,
+        "team": "Washington Commanders",
+        "returning_starters": 5,
+        "key_additions": [
+            "Multiple Free Agent signees"
+        ],
+        "projected_tier": "Ascending / Matchup",
+        "ffl_rating": 69,
+        "outlook": "Pitched heavy upgrades to patch up last year's struggles.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 26,
+        "team": "New Orleans Saints",
+        "returning_starters": 6,
+        "key_additions": [
+            "Draft additions"
+        ],
+        "projected_tier": "Deep League / Matchup",
+        "ffl_rating": 68,
+        "outlook": "Aging core transitioning into newer rotational pieces.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 27,
+        "team": "Arizona Cardinals",
+        "returning_starters": 6,
+        "key_additions": [
+            "Front-7 depth"
+        ],
+        "projected_tier": "Deep League / Matchup",
+        "ffl_rating": 66,
+        "outlook": "Young unit gaining valuable experience.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 28,
+        "team": "New York Giants",
+        "returning_starters": 6,
+        "key_additions": [
+            "Linebacker help"
+        ],
+        "projected_tier": "Deep League / Matchup",
+        "ffl_rating": 65,
+        "outlook": "Individual standouts surrounded by developing pieces.",
+        "vs_run_projection": "Below Average",
+        "vs_pass_projection": "Vulnerable"
+    },
+    {
+        "rank": 29,
+        "team": "Tennessee Titans",
+        "returning_starters": 5,
+        "key_additions": [
+            "Secondary upgrades"
+        ],
+        "projected_tier": "Low Floor / Matchup Only",
+        "ffl_rating": 62,
+        "outlook": "Rebuilding chemistry and low starter retention.",
+        "vs_run_projection": "Poor / High Leakage",
+        "vs_pass_projection": "Vulnerable / High Yards-Per-Attempt"
+    },
+    {
+        "rank": 30,
+        "team": "Carolina Panthers",
+        "returning_starters": 5,
+        "key_additions": [
+            "Defensive line additions"
+        ],
+        "projected_tier": "Low Floor / Matchup Only",
+        "ffl_rating": 60,
+        "outlook": "Working to establish a consistent defensive identity.",
+        "vs_run_projection": "Poor / High Leakage",
+        "vs_pass_projection": "Vulnerable / High Yards-Per-Attempt"
+    },
+    {
+        "rank": 31,
+        "team": "Las Vegas Raiders",
+        "returning_starters": 5,
+        "key_additions": [
+            "Rookie starters"
+        ],
+        "projected_tier": "Low Floor / Matchup Only",
+        "ffl_rating": 58,
+        "outlook": "Transition year with new starters filling key gaps.",
+        "vs_run_projection": "Poor / High Leakage",
+        "vs_pass_projection": "Vulnerable / High Yards-Per-Attempt"
+    },
+    {
+        "rank": 32,
+        "team": "New England Patriots",
+        "returning_starters": 4,
+        "key_additions": [
+            "Rebuilding pieces"
+        ],
+        "projected_tier": "Low Floor / Matchup Only",
+        "ffl_rating": 55,
+        "outlook": "Lowest returning starter continuity; heavy rebuild phase.",
+        "vs_run_projection": "Poor / High Leakage",
+        "vs_pass_projection": "Vulnerable / High Yards-Per-Attempt"
+    }
+]
