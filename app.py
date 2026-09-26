@@ -55,7 +55,7 @@ for key, default in {
 # Constants / helpers
 # ---------------------------------------------------------------------------
 CURRENT_YEAR = 2026
-AVAILABLE_SEASONS = list(range(2019, 2026))
+AVAILABLE_SEASONS = list(range(2019, max(CURRENT_YEAR, 2027) + 1))
 
 STRATEGY_LABELS = {
     "best_projected": "Best Projected Score",

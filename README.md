@@ -10,7 +10,7 @@ generate data-driven lineups under a $50,000 salary cap.
 
 - **DraftKings CSV ingestion** — upload your weekly player pool or fetch via URL
 - **nflverse stat enrichment** — pulls real player stats from the nflverse CDN
-  (2019–2025 seasons available), including:
+  (2019–2027 seasons selectable; availability depends on nflverse releases), including:
   - Recent fantasy points (last N weeks)
   - Targets & target share
   - WOPR (Weighted Opportunity Rating)
@@ -113,7 +113,7 @@ streamlit run app.py
    DraftKings → Lobby → Export CSV) or paste the CSV URL into the sidebar.
 
 2. **Load NFL Stats** *(optional but recommended)* — select one or more past
-   seasons (e.g. 2024, 2025), set the recent-weeks window, and click
+  seasons (e.g. 2024, 2025, or the current season), set the recent-weeks window, and click
    **Load Stats**. This fetches parquet files from the nflverse CDN (~10–30s).
 
 3. **Optimizer Settings** — choose a strategy, toggle injury exclusions, and
@@ -134,9 +134,9 @@ streamlit run app.py
 | Source | What it provides |
 |--------|-----------------|
 | DraftKings CSV | Player pool, salaries, positions, injury status |
-| nflverse `stats_player` CDN | Weekly player stats (2019–2025) |
-| nflverse `snap_counts` CDN | Snap percentage (2019–2025) |
-| nflverse `schedules` CDN | Game totals, spreads, home/away |
+| nflverse `stats_player` CDN | Weekly player stats (2019–2027, as released) |
+| nflverse `snap_counts` CDN | Snap percentage (2019–2027, as released) |
+| nflverse `schedules` CDN | Game totals, spreads, home/away (1999–2027, as released) |
 
 nflverse data is fetched directly from the
 [nflverse-data GitHub releases](https://github.com/nflverse/nflverse-data/releases).
