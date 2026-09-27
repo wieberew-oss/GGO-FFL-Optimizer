@@ -49,21 +49,36 @@ class OptimizationResult:
     feasible: bool
     message: str = ""
     enriched_stats: dict = None   # dk_id -> PlayerStats, passed through for display
+    player_projections: dict = None
+    matchup_adjustments: dict = None
+    projection_mode: str = "adjusted"
 
     def __post_init__(self):
         if self.enriched_stats is None:
             self.enriched_stats = {}
+        if self.player_projections is None:
+            self.player_projections = {}
+        if self.matchup_adjustments is None:
+            self.matchup_adjustments = {}
 
     def to_display_rows(self) -> list:
         rows = []
         for player, slot in self.lineup:
             ps = self.enriched_stats.get(player.dk_id)
-            adj_proj = (
-                f"{ps.adjusted_projection:.1f}" if ps and ps.adjusted_projection is not None
-                else f"{player.projection:.1f}"
-            )
+            if player.dk_id in self.player_projections:
+                adj_proj = f"{self.player_projections[player.dk_id]:.1f}"
+            elif ps and ps.adjusted_projection is not None:
+                adj_proj = f"{ps.adjusted_projection:.1f}"
+            else:
+                adj_proj = f"{player.projection:.1f}"
             source = ps.data_source if ps else "dk_only"
             source_icon = {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(source, "·")
+            vegas_adjustment = getattr(ps, "vegas_adjustment", None) if ps else None
+            vegas_delta = (
+                "Not applied" if self.projection_mode == "dk_only"
+                else f"{vegas_adjustment:+.1f}" if vegas_adjustment is not None
+                else "—"
+            )
             rows.append({
                 "Slot":     slot,
                 "Player":   player.name,
@@ -72,6 +87,9 @@ class OptimizationResult:
                 "Opp":      player.opponent,
                 "Salary":   f"${player.salary:,}",
                 "Proj":     adj_proj,
+                "Vegas Δ": vegas_delta,
+                "Defense Δ": "Not applied" if self.projection_mode == "dk_only"
+                else f"{self.matchup_adjustments.get(player.dk_id, 0.0):+.1f}",
                 "DK Avg":   f"{player.projection:.1f}",
                 "Value":    f"{player.value:.2f}",
                 "Status":   player.status if player.status else "OK",
@@ -85,6 +103,9 @@ class OptimizationResult:
             "Opp":    "",
             "Salary": f"${self.total_salary:,}",
             "Proj":   f"{self.total_projection:.1f}",
+            "Vegas Δ": "Not applied" if self.projection_mode == "dk_only" else "—",
+            "Defense Δ": "Not applied" if self.projection_mode == "dk_only"
+            else f"{sum(self.matchup_adjustments.get(p.dk_id, 0.0) for p, _ in self.lineup):+.1f}",
             "DK Avg": "",
             "Value":  "",
             "Status": "",
@@ -93,24 +114,32 @@ class OptimizationResult:
         return rows
 
 
-def _build_projection(player: Player, strategy: str, enriched_stats: dict) -> float:
-    """
-    Return the effective projection for a player given the strategy.
-    Uses adjusted_projection from enriched stats when available.
-    """
-    # Get the best available projection
+def effective_projection(
+    player: Player,
+    enriched_stats: Optional[dict] = None,
+    matchup_multiplier: float = 1.0,
+) -> float:
+    """Return the player's point projection after enrichment and matchup scaling."""
+    enriched_stats = enriched_stats or {}
     ps = enriched_stats.get(player.dk_id)
-    if ps is not None and ps.adjusted_projection is not None:
-        base = ps.adjusted_projection
-    else:
-        base = player.projection
+    base = (
+        ps.adjusted_projection
+        if ps is not None and ps.adjusted_projection is not None
+        else player.projection
+    )
+    return base * matchup_multiplier
 
+
+def _build_projection(player: Player, strategy: str, projection: float) -> float:
+    """
+    Convert point projections to the optimizer objective for a strategy.
+    """
     if strategy == "best_value":
         # Value = adjusted pts per $1k of salary
-        return (base / (player.salary / 1000)) if player.salary > 0 else 0.0
+        return (projection / (player.salary / 1000)) if player.salary > 0 else 0.0
 
     # best_projected and all others: use adjusted projection directly
-    return base
+    return projection
 
 
 def optimize(
@@ -122,6 +151,8 @@ def optimize(
     exclude_questionable: bool = False,
     min_salary: int = 0,
     enriched_stats: Optional[dict] = None,
+    matchup_multipliers: Optional[dict] = None,
+    projection_mode: str = "adjusted",
 ) -> OptimizationResult:
     """
     Find the optimal lineup given the player pool and constraints.
@@ -136,10 +167,12 @@ def optimize(
     exclude_questionable : if True, exclude players with Q status
     min_salary           : minimum total salary to enforce (default 0)
     enriched_stats       : dict of dk_id -> PlayerStats from projections.py
+    projection_mode      : 'dk_only' or 'adjusted'
     """
     exclude_names = exclude_names or set()
     lock_names = lock_names or set()
     enriched_stats = enriched_stats or {}
+    matchup_multipliers = matchup_multipliers or {}
 
     # Filter player pool
     pool = []
@@ -180,7 +213,25 @@ def optimize(
     # -----------------------------------------------------------------------
     # Objective: maximize weighted projection
     # -----------------------------------------------------------------------
-    projections = [_build_projection(p, strategy, enriched_stats) for p in pool]
+    if projection_mode not in {"dk_only", "adjusted"}:
+        raise ValueError("projection_mode must be 'dk_only' or 'adjusted'")
+
+    effective_stats = {} if projection_mode == "dk_only" else enriched_stats
+    base_projections = {
+        p.dk_id: effective_projection(p, effective_stats)
+        for p in pool
+    }
+    player_projections = {
+        p.dk_id: base_projections[p.dk_id] * (
+            1.0 if projection_mode == "dk_only" else matchup_multipliers.get(p.dk_id, 1.0)
+        )
+        for p in pool
+    }
+    matchup_adjustments = {
+        p.dk_id: player_projections[p.dk_id] - base_projections[p.dk_id]
+        for p in pool
+    }
+    projections = [_build_projection(p, strategy, player_projections[p.dk_id]) for p in pool]
     prob += pulp.lpSum(projections[i] * x[i] for i in indices), "Total_Projection"
 
     # -----------------------------------------------------------------------
@@ -271,7 +322,7 @@ def optimize(
     lineup.sort(key=lambda t: (slot_order.get(t[1], 99), t[0].name))
 
     total_salary = sum(p.salary for p, _ in lineup)
-    total_projection = sum(p.projection for p, _ in lineup)
+    total_projection = sum(player_projections[p.dk_id] for p, _ in lineup)
 
     return OptimizationResult(
         lineup=lineup,
@@ -279,7 +330,10 @@ def optimize(
         total_projection=round(total_projection, 2),
         strategy=strategy,
         feasible=True,
-        enriched_stats=enriched_stats,
+        enriched_stats=effective_stats,
+        player_projections=player_projections,
+        matchup_adjustments=matchup_adjustments,
+        projection_mode=projection_mode,
     )
 
 

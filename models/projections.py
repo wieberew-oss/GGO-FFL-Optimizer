@@ -63,6 +63,7 @@ class PlayerStats:
     spread_line: Optional[float] = None
     is_home: Optional[bool] = None
     implied_total: Optional[float] = None
+    vegas_adjustment: Optional[float] = None
 
     # Adjusted projection (output)
     adjusted_projection: Optional[float] = None
@@ -121,6 +122,73 @@ def _home_boost(is_home: Optional[bool], position: str) -> float:
         return 0.0
     boosts = {"QB": 0.4, "RB": 0.2, "WR": 0.25, "TE": 0.15}
     return boosts.get(position, 0.0) if is_home else 0.0
+
+
+_PROJECTION_WEIGHTS = {
+    "QB": (0.40, 0.60),
+    "RB": (0.35, 0.65),
+    "WR": (0.30, 0.60),
+    "TE": (0.35, 0.65),
+}
+
+
+def projection_math(
+    player: Player,
+    stats: Optional[PlayerStats],
+    matchup_multiplier: float = 1.0,
+    adjustments_enabled: bool = True,
+) -> str:
+    """Describe the terms used to produce the player's displayed projection."""
+    if not adjustments_enabled:
+        return f"DK {player.projection:.1f} (adjustments off)"
+
+    terms = []
+    recent = stats.recent_fantasy_pts if stats else None
+    weights = _PROJECTION_WEIGHTS.get(player.position)
+    if recent is not None and weights is not None:
+        dk_weight, recent_weight = weights
+        terms.extend([
+            f"DK {player.projection:.1f} x {dk_weight:.0%}",
+            f"recent {recent:.1f} x {recent_weight:.0%}",
+        ])
+    else:
+        terms.append(f"DK {player.projection:.1f}")
+
+    if stats and stats.implied_total is not None:
+        terms.append(f"Vegas {_vegas_boost(stats.implied_total, player.position):+.1f}")
+        if stats.is_home is not None:
+            terms.append(f"home {_home_boost(stats.is_home, player.position):+.1f}")
+    else:
+        terms.append("Vegas unavailable")
+        if stats is None or stats.is_home is None:
+            terms.append("home unavailable")
+
+    if recent is not None and stats is not None:
+        if player.position == "RB" and stats.avg_snap_pct is not None:
+            bonus = max(0.0, (stats.avg_snap_pct - 0.50) * 3.0)
+            terms.append(f"snap {bonus:+.1f}")
+        elif player.position == "WR":
+            if stats.avg_target_share is not None:
+                bonus = max(0.0, (stats.avg_target_share - 0.20) * 10.0)
+                terms.append(f"target {bonus:+.1f}")
+            if stats.avg_wopr is not None:
+                bonus = max(0.0, (stats.avg_wopr - 0.50) * 2.0)
+                terms.append(f"WOPR {bonus:+.1f}")
+        elif player.position == "TE" and stats.avg_target_share is not None:
+            bonus = max(0.0, (stats.avg_target_share - 0.12) * 8.0)
+            terms.append(f"target {bonus:+.1f}")
+
+    base_projection = (
+        stats.adjusted_projection
+        if stats is not None and stats.adjusted_projection is not None
+        else player.projection
+    )
+    final_projection = base_projection * matchup_multiplier
+    expression = " + ".join(terms)
+    expression += f" = {base_projection:.1f}"
+    if matchup_multiplier != 1.0:
+        expression += f"; x defense {matchup_multiplier:.2f} = {final_projection:.1f}"
+    return expression
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +411,12 @@ def enrich_players(
 
         # --- Vegas context ---
         try:
-            ctx = get_game_context(seasons, player.team, player.opponent)
+            game_date = _game_date_from_info(player.game_info)
+            ctx = (
+                get_game_context([game_date.year], player.team, player.opponent, game_date)
+                if game_date is not None
+                else {}
+            )
             if ctx:
                 stats.total_line = ctx.get("total_line")
                 stats.spread_line = ctx.get("spread_line")
@@ -353,6 +426,11 @@ def enrich_players(
             pass
 
         # --- Compute adjusted projection ---
+        if stats.implied_total is not None:
+            stats.vegas_adjustment = round(
+                _vegas_boost(stats.implied_total, player.position), 2
+            )
+
         adjuster = _ADJUSTERS.get(player.position)
         if adjuster and stats.recent_fantasy_pts is not None:
             stats.adjusted_projection = adjuster(player.projection, stats)
@@ -379,3 +457,12 @@ def _safe_float(row, col: str) -> Optional[float]:
         return None if pd.isna(f) else f
     except (TypeError, ValueError):
         return None
+
+
+def _game_date_from_info(game_info: str):
+    """Parse the MM/DD/YYYY date in a DraftKings Game Info value."""
+    parts = game_info.split()
+    if len(parts) < 2:
+        return None
+    parsed = pd.to_datetime(parts[1], format="%m/%d/%Y", errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()

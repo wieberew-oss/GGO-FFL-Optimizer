@@ -291,8 +291,9 @@ def get_game_context(
     seasons: list[int],
     team: str,
     opponent: str,
+    game_date=None,
 ) -> dict:
-    """Return Vegas context for the most recent game between team and opponent."""
+    """Return Vegas context for a matchup, preferring an exact scheduled date."""
     schedules = fetch_schedules(seasons)
     if schedules.empty:
         return {}
@@ -307,6 +308,16 @@ def get_game_context(
     games = schedules[mask].sort_values(["season", "week"], ascending=False)
     if games.empty:
         return {}
+
+    if game_date is not None:
+        date_col = next((c for c in ("gameday", "game_date") if c in games.columns), None)
+        if date_col is None:
+            return {}
+        target_date = pd.Timestamp(game_date).date()
+        game_dates = pd.to_datetime(games[date_col], errors="coerce").dt.date
+        games = games[game_dates == target_date]
+        if games.empty:
+            return {}
 
     game    = games.iloc[0]
     is_home = game["home_team"] == team_nfl

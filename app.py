@@ -20,9 +20,9 @@ import pandas as pd
 import streamlit as st
 
 from ingestion.csv_loader import load_from_upload, load_from_url
-from optimization.optimizer import optimize, SALARY_CAP
+from optimization.optimizer import optimize, effective_projection, SALARY_CAP
 from data.nflverse import is_available as nfl_available, clear_cache
-from models.projections import enrich_players
+from models.projections import enrich_players, projection_math
 from data.defenses import get_opponent_defensive_factor
 
 # ---------------------------------------------------------------------------
@@ -62,6 +62,11 @@ STRATEGY_LABELS = {
     "best_value": "Best Value (Pts per $1k)",
 }
 
+PROJECTION_MODE_LABELS = {
+    "dk_only": "DraftKings averages only",
+    "adjusted": "DK + available adjustments",
+}
+
 STATUS_COLOR = {
     "": "🟢",
     "Q": "🟡",
@@ -79,7 +84,7 @@ def status_badge(s: str) -> str:
 def get_matchup_multiplier_and_badge(position: str, opponent: str, use_preseason: bool) -> tuple[float, str]:
     """
     Calculates defensive matchup scaling factor and visual badge using
-    either pre-season JSON predictions or live game history.
+    preseason JSON predictions or a neutral no-adjustment setting.
     """
     multiplier = get_opponent_defensive_factor(position, opponent, use_preseason=use_preseason)
 
@@ -91,7 +96,7 @@ def get_matchup_multiplier_and_badge(position: str, opponent: str, use_preseason
         else:
             badge = "🟡 Neutral"
     else:
-        badge = "🟡 Live Matchup"
+        badge = "⚪ Neutral"
 
     return multiplier, badge
 
@@ -201,9 +206,9 @@ with st.sidebar:
         st.markdown("#### 🛡️ Defensive Matchup Source")
         def_mode = st.radio(
             "Matchup Basis",
-            options=["Pre-Season Predictions (JSON)", "Live Game History (nflverse)"],
+            options=["Pre-Season Predictions (JSON)", "No Defensive Adjustment (1.0x)"],
             index=0,
-            help="Use pre-season returning starter predictions early in the year, then switch to live game stats once sample sizes grow."
+            help="The preseason option applies static JSON matchup tiers. The other option applies no defensive multiplier; live nflverse defensive matchup factors are not implemented yet."
         )
         use_preseason_def = ("Pre-Season" in def_mode)
 
@@ -252,6 +257,17 @@ with st.sidebar:
 
     # ---- 3. Optimizer Settings & Roster Constraints ----
     st.subheader("3. Optimizer Settings")
+
+    projection_mode = st.selectbox(
+        "Projection model",
+        options=list(PROJECTION_MODE_LABELS),
+        format_func=lambda mode: PROJECTION_MODE_LABELS[mode],
+        help=(
+            "DK averages only ignores all projection adjustments. DK + available adjustments "
+            "uses nflverse recent-form enrichment when loaded, plus available Vegas and "
+            "preseason matchup adjustments."
+        ),
+    )
 
     strategy = st.selectbox(
         "Strategy",
@@ -302,6 +318,13 @@ if not players:
 # Handle generation trigger with explicit lock/exclude passing
 if run_btn:
     with st.spinner("Optimizing new lineup alternative..."):
+        matchup_multipliers = {
+            p.dk_id: get_matchup_multiplier_and_badge(
+                p.position, p.opponent, use_preseason_def
+            )[0]
+            for p in players
+        }
+        use_adjusted_projection = projection_mode == "adjusted"
         result = optimize(
             players,
             strategy=strategy,
@@ -309,7 +332,9 @@ if run_btn:
             lock_names=st.session_state.lock_names,
             exclude_injured=exclude_injured,
             exclude_questionable=exclude_questionable,
-            enriched_stats=st.session_state.enriched_stats,
+            enriched_stats=st.session_state.enriched_stats if use_adjusted_projection else {},
+            matchup_multipliers=matchup_multipliers if use_adjusted_projection else {},
+            projection_mode=projection_mode,
         )
     if result.feasible:
         st.session_state.lineup_history.insert(0, result)
@@ -339,6 +364,12 @@ with tab_pool:
            * **🟢 Soft Matchup:** Up to a **+12% boost** facing bottom-tier units against that position.
            * **🟡 Neutral Matchup:** **1.0x baseline** multiplier.
            * **🔴 Tough Matchup:** Up to a **-12% discount** facing top-tier shutdown defenses.
+
+        The **Math** column shows the arithmetic used for each projection. The displayed blend splits
+        are hand-set heuristics, not weights learned from a backtest. The **Vegas Δ** and **Defense Δ** columns show each factor's separate point change.
+          Vegas Δ is the implied-team-total boost only; Defense Δ is the change from applying
+          the matchup multiplier to the projection after enrichment. A dash means Vegas lines
+          were unavailable for that game.
         """)
 
     latest_lineup = st.session_state.lineup_history[0] if st.session_state.lineup_history else None
@@ -373,8 +404,17 @@ with tab_pool:
         in_lineup_tag = "🏈 In Lineup" if p.dk_id in picked_ids else ""
 
         matchup_mult, matchup_badge = get_matchup_multiplier_and_badge(p.position, p.opponent, use_preseason_def)
-        base_proj = ps.adjusted_projection if (ps and ps.adjusted_projection is not None) else p.projection
-        final_adj_proj = base_proj * matchup_mult
+        if projection_mode == "dk_only":
+            final_adj_proj = p.projection
+            vegas_delta = "Not applied"
+            defense_delta = "Not applied"
+            matchup_badge = "Not applied"
+        else:
+            final_adj_proj = effective_projection(p, st.session_state.enriched_stats, matchup_mult)
+            vegas_adjustment = getattr(ps, "vegas_adjustment", None) if ps else None
+            vegas_delta = f"{vegas_adjustment:+.1f}" if vegas_adjustment is not None else "—"
+            base_adj_proj = effective_projection(p, st.session_state.enriched_stats)
+            defense_delta = f"{final_adj_proj - base_adj_proj:+.1f}"
 
         row_dict = {
             "Name": p.name,
@@ -385,10 +425,18 @@ with tab_pool:
             "Salary": f"${p.salary:,}",
             "DK Avg": p.projection,
             "Adj Proj": f"{final_adj_proj:.1f}",
+            "Math": projection_math(
+                p,
+                ps,
+                matchup_mult if projection_mode != "dk_only" else 1.0,
+                adjustments_enabled=projection_mode != "dk_only",
+            ),
+            "Vegas Δ": vegas_delta,
+            "Defense Δ": defense_delta,
             "Matchup": matchup_badge,
             "Value": f"{p.value:.2f}",
             "Injury": status_badge(p.status),
-            "Data": {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(ps.data_source, "·") if ps else "·",
+            "Data": {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(ps.data_source, "·") if ps and projection_mode != "dk_only" else "·",
             "Snap%": f"{ps.avg_snap_pct * 100:.0f}%" if ps and ps.avg_snap_pct is not None else "-",
             "Targets": f"{ps.avg_targets:.1f}" if ps and ps.avg_targets is not None else "-",
             "Tgt Share": f"{ps.avg_target_share * 100:.1f}%" if ps and ps.avg_target_share is not None else "-",
@@ -415,6 +463,13 @@ with tab_pool:
             "Salary": st.column_config.TextColumn("Salary", width=85),
             "DK Avg": st.column_config.NumberColumn("DK Avg", format="%.1f"),
             "Adj Proj": st.column_config.TextColumn("Adj Proj"),
+            "Math": st.column_config.TextColumn(
+                "Projection Math",
+                width="large",
+                help="Breakdown of DK/recent-form blend and available contextual adjustments. Blend weights are heuristic.",
+            ),
+            "Vegas Δ": st.column_config.TextColumn("Vegas Δ", help="Point change from implied team total; — means no usable line."),
+            "Defense Δ": st.column_config.TextColumn("Defense Δ", help="Point change from the opponent matchup multiplier."),
             "Matchup": st.column_config.TextColumn("Matchup vs Def", width=110),
             "Value": st.column_config.TextColumn("Value"),
             "Injury": st.column_config.TextColumn("Injury"),
@@ -493,6 +548,8 @@ with tab_lineup:
                         "Opp": st.column_config.TextColumn("Opp", width=55),
                         "Salary": st.column_config.TextColumn("Salary", width=85),
                         "Proj": st.column_config.TextColumn("Proj", width=65, help="Adjusted projection"),
+                        "Vegas Δ": st.column_config.TextColumn("Vegas Δ", width=75, help="Point change from implied team total; — means no usable line."),
+                        "Defense Δ": st.column_config.TextColumn("Defense Δ", width=85, help="Point change from the opponent matchup multiplier."),
                         "DK Avg": st.column_config.TextColumn("DK Avg", width=65, help="DraftKings AvgPointsPerGame"),
                         "Value": st.column_config.TextColumn("Value", width=65),
                         "Status": st.column_config.TextColumn("Status", width=65),
@@ -507,11 +564,18 @@ with tab_lineup:
                     adj_str = ""
                     ctx_str = ""
 
-                    if ps:
-                        if ps.adjusted_projection is not None and ps.data_source != "dk_only":
-                            diff = ps.adjusted_projection - player.projection
-                            sign = "+" if diff >= 0 else ""
-                            adj_str = f" → adj **{ps.adjusted_projection:.1f}** ({sign}{diff:.1f})"
+                    if res.projection_mode == "dk_only":
+                        adj_str = " | Vegas and defensive adjustments not applied"
+                    elif ps:
+                        vegas_value = (
+                            f"{ps.vegas_adjustment:+.1f}"
+                            if ps.vegas_adjustment is not None else "unavailable"
+                        )
+                        defense_value = res.matchup_adjustments.get(player.dk_id, 0.0)
+                        adj_str = (
+                            f" | Vegas Δ {vegas_value}, Defense Δ {defense_value:+.1f}, "
+                            f"final proj **{res.player_projections.get(player.dk_id, player.projection):.1f}**"
+                        )
                         if ps.implied_total is not None:
                             home_str = "home" if ps.is_home else "away"
                             ctx_str = f" | {home_str}, implied {ps.implied_total:.1f}"
