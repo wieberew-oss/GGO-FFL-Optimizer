@@ -67,7 +67,9 @@ class PlayerStats:
 
     # Adjusted projection (output)
     adjusted_projection: Optional[float] = None
-    data_source: str = "dk_only"  # 'dk_only' | 'enriched'
+    floor: Optional[float] = None
+    ceiling: Optional[float] = None
+    data_source: str = "dk_only"  # 'dk_only' | 'enriched' | 'vegas_only'
 
     def to_display_dict(self) -> dict:
         """Flat dict for showing in the player pool table."""
@@ -83,6 +85,8 @@ class PlayerStats:
             "Game Total": _fmt(self.total_line),
             "Implied": _fmt(self.implied_total),
             "Home": ("Yes" if self.is_home else "No") if self.is_home is not None else "-",
+            "Floor": _fmt(self.floor),
+            "Ceiling": _fmt(self.ceiling),
         }
 
 
@@ -240,6 +244,31 @@ def _adjust_te(base: float, stats: PlayerStats) -> float:
     if stats.avg_target_share is not None:
         tgt_bonus = max(0.0, (stats.avg_target_share - 0.12) * 8.0)
     return round(base * 0.35 + recent * 0.65 + vegas + home + tgt_bonus, 2)
+
+
+
+def _compute_floor_ceiling(base_proj: float, recent: Optional[float], games_played: Optional[int]) -> tuple[float, float]:
+    """
+    Simple floor / ceiling estimates.
+    Floor leans on the lower of DK avg and recent form.
+    Ceiling leans on the higher of the two, with a modest upside bump.
+    """
+    if recent is None:
+        floor = round(base_proj * 0.70, 2)
+        ceiling = round(base_proj * 1.40, 2)
+        return floor, ceiling
+
+    # More games → tighter band around recent form
+    sample = games_played or 1
+    weight_recent = min(0.75, 0.40 + 0.05 * sample)
+
+    blended = base_proj * (1 - weight_recent) + recent * weight_recent
+    low = min(base_proj, recent, blended)
+    high = max(base_proj, recent, blended)
+
+    floor = round(max(0.0, low * 0.85), 2)
+    ceiling = round(high * 1.25, 2)
+    return floor, ceiling
 
 
 _ADJUSTERS = {
@@ -441,6 +470,16 @@ def enrich_players(
             home = _home_boost(stats.is_home, player.position)
             stats.adjusted_projection = round(base + vegas + home, 2)
             stats.data_source = "vegas_only" if (stats.implied_total is not None) else "dk_only"
+
+        # Floor / ceiling estimates
+        stats.floor, stats.ceiling = _compute_floor_ceiling(
+            stats.adjusted_projection or player.projection,
+            stats.recent_fantasy_pts,
+            stats.games_played,
+        )
+        # Also attach to the Player object for optimizer convenience
+        player.floor = stats.floor
+        player.ceiling = stats.ceiling
 
         results[player.dk_id] = stats
 

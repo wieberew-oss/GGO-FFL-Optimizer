@@ -20,10 +20,12 @@ import pandas as pd
 import streamlit as st
 
 from ingestion.csv_loader import load_from_upload, load_from_url
-from optimization.optimizer import optimize, effective_projection, SALARY_CAP
+from optimization.optimizer import optimize, optimize_multiple_lineups, effective_projection, SALARY_CAP
 from data.nflverse import is_available as nfl_available, clear_cache
 from models.projections import enrich_players, projection_math
-from data.defenses import get_opponent_defensive_factor
+from data.defenses import get_opponent_defensive_factor, get_matchup_detail, clear_defense_cache
+from models.monte_carlo import simulate_lineup
+from data.statsguy import pressure_test_lineup, clear_statsguy_cache
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -60,6 +62,9 @@ AVAILABLE_SEASONS = list(range(2019, max(CURRENT_YEAR, 2027) + 1))
 STRATEGY_LABELS = {
     "best_projected": "Best Projected Score",
     "best_value": "Best Value (Pts per $1k)",
+    "high_floor": "High Floor (safer)",
+    "high_ceiling": "High Ceiling (upside)",
+    "contrarian": "Contrarian (ceiling / $)",
 }
 
 PROJECTION_MODE_LABELS = {
@@ -81,24 +86,30 @@ def status_badge(s: str) -> str:
     return STATUS_COLOR.get(s, "⚪") + " " + (s if s else "OK")
 
 
-def get_matchup_multiplier_and_badge(position: str, opponent: str, use_preseason: bool) -> tuple[float, str]:
+def get_matchup_multiplier_and_badge(
+    position: str,
+    opponent: str,
+    use_preseason: bool,
+    season: int | None = None,
+    sample_mode: str = "all",
+    last_n: int = 4,
+    disable: bool = False,
+) -> tuple[float, str]:
     """
-    Calculates defensive matchup scaling factor and visual badge using
-    preseason JSON predictions or a neutral no-adjustment setting.
+    Defensive matchup scaling factor + badge.
+    Prefer live season sample; fall back to preseason JSON.
     """
-    multiplier = get_opponent_defensive_factor(position, opponent, use_preseason=use_preseason)
+    if disable:
+        return 1.0, "⚪ Off"
 
-    if use_preseason:
-        if multiplier < 0.95:
-            badge = "🔴 Tough"
-        elif multiplier > 1.05:
-            badge = "🟢 Soft"
-        else:
-            badge = "🟡 Neutral"
-    else:
-        badge = "⚪ Neutral"
-
-    return multiplier, badge
+    detail = get_matchup_detail(
+        position, opponent,
+        use_preseason=use_preseason,
+        season=season,
+        sample_mode=sample_mode,
+        last_n=last_n,
+    )
+    return detail["multiplier"], detail["badge"]
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +139,9 @@ with st.sidebar:
         )
         if uploaded:
             try:
-                players = load_from_upload(uploaded)
+                players, skipped = load_from_upload(uploaded)
+                if skipped:
+                    st.warning(f"Skipped {len(skipped)} malformed rows")
                 st.session_state.players = players
                 st.session_state.nfl_loaded = False
                 st.session_state.enriched_stats = {}
@@ -206,11 +219,38 @@ with st.sidebar:
         st.markdown("#### 🛡️ Defensive Matchup Source")
         def_mode = st.radio(
             "Matchup Basis",
-            options=["Pre-Season Predictions (JSON)", "No Defensive Adjustment (1.0x)"],
+            options=[
+                "Season sample (auto)",
+                "Pre-Season Predictions (JSON)",
+                "No Defensive Adjustment (1.0x)",
+            ],
             index=0,
-            help="The preseason option applies static JSON matchup tiers. The other option applies no defensive multiplier; live nflverse defensive matchup factors are not implemented yet."
+            help=(
+                "Season sample ranks each defense by fantasy points allowed to QB/RB/WR/TE "
+                "from this year's completed games (nflverse). Soft matchups boost projections; "
+                "tough ones discount them. Auto-expands as more weeks finish. "
+                "Falls back to preseason JSON if data is missing."
+            ),
         )
-        use_preseason_def = ("Pre-Season" in def_mode)
+        use_preseason_def = def_mode.startswith("Pre-Season")
+        disable_def = def_mode.startswith("No Defensive")
+        dvp_season = max(seasons_selected) if seasons_selected else 2026
+
+        dvp_sample_mode = "all"
+        dvp_last_n = 4
+        if def_mode.startswith("Season sample"):
+            window = st.radio(
+                "Sample window",
+                options=["All weeks so far", "Last N weeks"],
+                index=0,
+                horizontal=True,
+                help="All weeks uses 1..latest completed. Last N uses a trailing window that slides forward each week.",
+            )
+            if window.startswith("Last"):
+                dvp_sample_mode = "last_n"
+                dvp_last_n = st.slider("N (last N weeks)", 2, 8, 4)
+            else:
+                dvp_sample_mode = "all"
 
         col_load, col_clear = st.columns(2)
         load_nfl_btn = col_load.button("Load Stats", type="primary", disabled=not players or not seasons_selected)
@@ -218,6 +258,7 @@ with st.sidebar:
 
         if clear_nfl_btn:
             clear_cache()
+            clear_defense_cache()
             st.session_state.nfl_loaded = False
             st.session_state.enriched_stats = {}
             st.toast("Cache cleared")
@@ -251,7 +292,15 @@ with st.sidebar:
 
     # Fallback toggle variable if nfl_data_py is unavailable
     if 'use_preseason_def' not in locals():
-        use_preseason_def = True
+        use_preseason_def = False
+    if 'disable_def' not in locals():
+        disable_def = False
+    if 'dvp_season' not in locals():
+        dvp_season = 2026
+    if 'dvp_sample_mode' not in locals():
+        dvp_sample_mode = "all"
+    if 'dvp_last_n' not in locals():
+        dvp_last_n = 4
 
     st.markdown("---")
 
@@ -273,10 +322,20 @@ with st.sidebar:
         "Strategy",
         options=list(STRATEGY_LABELS.keys()),
         format_func=lambda k: STRATEGY_LABELS[k],
+        help="High Floor maximizes safer projections; High Ceiling / Contrarian chase upside.",
     )
+
+    n_lineups = st.slider("Number of lineups to generate", 1, 10, 1,
+                          help="When >1, previously used players are softly penalized for diversity.")
 
     exclude_injured = st.checkbox("Exclude OUT / IR players", value=True)
     exclude_questionable = st.checkbox("Exclude Questionable (Q) players", value=False)
+
+    with st.expander("Advanced constraints"):
+        require_min_games = st.number_input("Min distinct games (Classic rule)", 1, 5, 2)
+        stack_qb = st.checkbox("Force QB + same-team WR/TE stack", value=False)
+        max_team = st.number_input("Max players from one team (0 = no limit)", 0, 5, 0)
+        uniqueness_penalty = st.slider("Diversity penalty (pts)", 0.0, 15.0, 5.0, 0.5)
 
     player_names_sorted = sorted([p.name for p in players]) if players else []
 
@@ -284,7 +343,6 @@ with st.sidebar:
     st.session_state.lock_names = {name for name in st.session_state.lock_names if name in player_names_sorted}
     st.session_state.exclude_names = {name for name in st.session_state.exclude_names if name in player_names_sorted}
 
-    # Sidebar multiselects driven cleanly by session state sets
     sidebar_locks = st.multiselect(
         "🔒 Lock Players",
         options=player_names_sorted,
@@ -304,7 +362,7 @@ with st.sidebar:
     st.session_state.exclude_names = set(sidebar_excludes)
 
     st.markdown("---")
-    run_btn = st.button("🚀 Generate New Lineup Alternative", type="primary", disabled=not players)
+    run_btn = st.button("🚀 Generate Lineup(s)", type="primary", disabled=not players)
 
 # ---------------------------------------------------------------------------
 # Main area
@@ -317,16 +375,17 @@ if not players:
 
 # Handle generation trigger with explicit lock/exclude passing
 if run_btn:
-    with st.spinner("Optimizing new lineup alternative..."):
+    with st.spinner(f"Optimizing {n_lineups} lineup(s)..."):
         matchup_multipliers = {
             p.dk_id: get_matchup_multiplier_and_badge(
-                p.position, p.opponent, use_preseason_def
+                p.position, p.opponent, use_preseason_def,
+                season=dvp_season, sample_mode=dvp_sample_mode,
+                last_n=dvp_last_n, disable=disable_def,
             )[0]
             for p in players
         }
         use_adjusted_projection = projection_mode == "adjusted"
-        result = optimize(
-            players,
+        common_kwargs = dict(
             strategy=strategy,
             exclude_names=st.session_state.exclude_names,
             lock_names=st.session_state.lock_names,
@@ -335,12 +394,25 @@ if run_btn:
             enriched_stats=st.session_state.enriched_stats if use_adjusted_projection else {},
             matchup_multipliers=matchup_multipliers if use_adjusted_projection else {},
             projection_mode=projection_mode,
+            require_min_games=int(require_min_games),
+            stack_qb_with_receiver=stack_qb,
+            max_from_same_team=int(max_team) if max_team > 0 else None,
+            uniqueness_penalty=float(uniqueness_penalty),
         )
-    if result.feasible:
-        st.session_state.lineup_history.insert(0, result)
-        st.toast(f"Generated lineup #{len(st.session_state.lineup_history)}! ({result.total_projection:.1f} pts)")
-    else:
-        st.error(f"❌ Optimization failed: {result.message}")
+        if n_lineups <= 1:
+            results = [optimize(players, **common_kwargs)]
+        else:
+            results = optimize_multiple_lineups(players, n_lineups=n_lineups, **common_kwargs)
+
+    ok_count = 0
+    for result in results:
+        if result.feasible:
+            st.session_state.lineup_history.insert(0, result)
+            ok_count += 1
+        else:
+            st.error(f"❌ Optimization failed: {result.message}")
+    if ok_count:
+        st.toast(f"Generated {ok_count} lineup(s)! Latest: {results[0].total_projection:.1f} pts")
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -403,18 +475,50 @@ with tab_pool:
         ps = st.session_state.enriched_stats.get(p.dk_id)
         in_lineup_tag = "🏈 In Lineup" if p.dk_id in picked_ids else ""
 
-        matchup_mult, matchup_badge = get_matchup_multiplier_and_badge(p.position, p.opponent, use_preseason_def)
+        if disable_def or projection_mode == "dk_only":
+            matchup_detail = {
+                "multiplier": 1.0, "badge": "⚪ Off", "rank": None,
+                "pts_allowed": None, "games": None, "source": "off",
+            }
+        else:
+            matchup_detail = get_matchup_detail(
+                p.position, p.opponent,
+                use_preseason=use_preseason_def,
+                season=dvp_season,
+                sample_mode=dvp_sample_mode,
+                last_n=dvp_last_n,
+            )
+
+        matchup_mult = matchup_detail["multiplier"]
+        matchup_badge = matchup_detail["badge"]
+
+        def_rank = matchup_detail.get("rank")
+        def_pts = matchup_detail.get("pts_allowed")
+        def_games = matchup_detail.get("games")
+
         if projection_mode == "dk_only":
             final_adj_proj = p.projection
             vegas_delta = "Not applied"
             defense_delta = "Not applied"
             matchup_badge = "Not applied"
+            def_rank_str = "—"
+            def_pts_str = "—"
         else:
             final_adj_proj = effective_projection(p, st.session_state.enriched_stats, matchup_mult)
             vegas_adjustment = getattr(ps, "vegas_adjustment", None) if ps else None
             vegas_delta = f"{vegas_adjustment:+.1f}" if vegas_adjustment is not None else "—"
             base_adj_proj = effective_projection(p, st.session_state.enriched_stats)
             defense_delta = f"{final_adj_proj - base_adj_proj:+.1f}"
+            # Rank 1 = softest (most pts allowed); 32 = toughest
+            if def_rank is not None:
+                def_rank_str = f"{def_rank}/32"
+            else:
+                def_rank_str = "—"
+            if def_pts is not None:
+                g_suffix = f" ({def_games}g)" if def_games else ""
+                def_pts_str = f"{def_pts:.1f}{g_suffix}"
+            else:
+                def_pts_str = "—"
 
         row_dict = {
             "Name": p.name,
@@ -434,6 +538,8 @@ with tab_pool:
             "Vegas Δ": vegas_delta,
             "Defense Δ": defense_delta,
             "Matchup": matchup_badge,
+            "Def Rank": def_rank_str,
+            "Def Pts/G": def_pts_str,
             "Value": f"{p.value:.2f}",
             "Injury": status_badge(p.status),
             "Data": {"enriched": "★", "vegas_only": "◆", "dk_only": "·"}.get(ps.data_source, "·") if ps and projection_mode != "dk_only" else "·",
@@ -471,6 +577,14 @@ with tab_pool:
             "Vegas Δ": st.column_config.TextColumn("Vegas Δ", help="Point change from implied team total; — means no usable line."),
             "Defense Δ": st.column_config.TextColumn("Defense Δ", help="Point change from the opponent matchup multiplier."),
             "Matchup": st.column_config.TextColumn("Matchup vs Def", width=110),
+            "Def Rank": st.column_config.TextColumn(
+                "Def Rank", width=80,
+                help="Opponent rank vs this position by fantasy pts allowed (1 = softest / most pts allowed, 32 = toughest).",
+            ),
+            "Def Pts/G": st.column_config.TextColumn(
+                "Def Pts/G", width=95,
+                help="Average fantasy points this defense has allowed per game to this position in the sample window.",
+            ),
             "Value": st.column_config.TextColumn("Value"),
             "Injury": st.column_config.TextColumn("Injury"),
             "Data": st.column_config.TextColumn("Data", width=50),
@@ -510,13 +624,22 @@ with tab_lineup:
             prefix = "⭐ [LATEST ACTIVE]" if is_latest else f"Alternative #{run_num}"
 
             remaining = SALARY_CAP - res.total_salary
-            card_title = f"{prefix} — Proj: **{res.total_projection:.1f} pts** | Salary: **${res.total_salary:,}**"
+            games = getattr(res, "games_used", 0)
+            floor_pts = getattr(res, "total_floor", 0)
+            ceil_pts = getattr(res, "total_ceiling", 0)
+            card_title = (
+                f"{prefix} — Proj: **{res.total_projection:.1f}** | "
+                f"Floor {floor_pts:.0f} / Ceil {ceil_pts:.0f} | "
+                f"${res.total_salary:,} | {games} games"
+            )
 
             with st.expander(card_title, expanded=is_latest):
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Projected Score", f"{res.total_projection:.1f} pts")
-                m2.metric("Total Salary", f"${res.total_salary:,}")
-                m3.metric("Cap Remaining", f"${remaining:,}")
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Projected", f"{res.total_projection:.1f}")
+                m2.metric("Floor", f"{floor_pts:.1f}" if floor_pts else "—")
+                m3.metric("Ceiling", f"{ceil_pts:.1f}" if ceil_pts else "—")
+                m4.metric("Salary", f"${res.total_salary:,}")
+                m5.metric("Cap Left", f"${remaining:,}")
 
                 if not is_latest:
                     if st.button(f"Make Active / Promote #{run_num}", key=f"promote_{idx}"):
@@ -527,6 +650,34 @@ with tab_lineup:
                 st.markdown("---")
 
                 rows = res.to_display_rows()
+                # Attach live defense rank / pts allowed for non-TOTAL rows
+                for row in rows:
+                    if row.get("Slot") == "TOTAL":
+                        row["Def Rank"] = ""
+                        row["Def Pts/G"] = ""
+                        continue
+                    # Find matching player
+                    pname = row.get("Player", "")
+                    player_match = next((p for p, _ in res.lineup if p.name == pname), None)
+                    if player_match is None or disable_def or res.projection_mode == "dk_only":
+                        row["Def Rank"] = "—"
+                        row["Def Pts/G"] = "—"
+                        continue
+                    detail = get_matchup_detail(
+                        player_match.position, player_match.opponent,
+                        use_preseason=use_preseason_def,
+                        season=dvp_season,
+                        sample_mode=dvp_sample_mode,
+                        last_n=dvp_last_n,
+                    )
+                    rank = detail.get("rank")
+                    pts = detail.get("pts_allowed")
+                    games = detail.get("games")
+                    row["Def Rank"] = f"{rank}/32" if rank is not None else "—"
+                    if pts is not None:
+                        row["Def Pts/G"] = f"{pts:.1f}" + (f" ({games}g)" if games else "")
+                    else:
+                        row["Def Pts/G"] = "—"
                 df_lineup = pd.DataFrame(rows)
 
 
@@ -550,12 +701,99 @@ with tab_lineup:
                         "Proj": st.column_config.TextColumn("Proj", width=65, help="Adjusted projection"),
                         "Vegas Δ": st.column_config.TextColumn("Vegas Δ", width=75, help="Point change from implied team total; — means no usable line."),
                         "Defense Δ": st.column_config.TextColumn("Defense Δ", width=85, help="Point change from the opponent matchup multiplier."),
+                        "Def Rank": st.column_config.TextColumn("Def Rank", width=80, help="1 = softest (most pts allowed to this position), 32 = toughest."),
+                        "Def Pts/G": st.column_config.TextColumn("Def Pts/G", width=95, help="Avg fantasy points this defense allowed to this position in the sample window."),
                         "DK Avg": st.column_config.TextColumn("DK Avg", width=65, help="DraftKings AvgPointsPerGame"),
                         "Value": st.column_config.TextColumn("Value", width=65),
                         "Status": st.column_config.TextColumn("Status", width=65),
                         "Data": st.column_config.TextColumn("Data", width=50, help=DATA_SOURCE_LEGEND),
+                        "Floor": st.column_config.TextColumn("Floor", width=60),
+                        "Ceiling": st.column_config.TextColumn("Ceiling", width=65),
+                        "Game": st.column_config.TextColumn("Game", width=90),
                     },
                 )
+
+                # DK export
+                try:
+                    import pandas as _pd
+                    export_df = _pd.DataFrame(res.to_dk_export_rows())
+                    csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="⬇️ Export this lineup (CSV)",
+                        data=csv_bytes,
+                        file_name=f"ggo_lineup_{run_num}.csv",
+                        mime="text/csv",
+                        key=f"export_{idx}_{run_num}",
+                    )
+                except Exception:
+                    pass
+
+                # ---- Pressure tests: Monte Carlo + Stats Guy ----
+                st.markdown("##### 🧪 Pressure tests")
+                pt_c1, pt_c2 = st.columns(2)
+
+                with pt_c1:
+                    if st.button("Run Monte Carlo", key=f"mc_{idx}_{run_num}"):
+                        with st.spinner("Simulating lineup..."):
+                            sim = simulate_lineup(
+                                res.lineup,
+                                player_projections=res.player_projections,
+                                n_sims=3000,
+                            )
+                            st.session_state[f"mc_result_{idx}"] = sim
+
+                    sim = st.session_state.get(f"mc_result_{idx}")
+                    if sim is not None:
+                        st.caption(
+                            f"**MC mean {sim.mean:.1f}** ± {sim.std:.1f}  ·  "
+                            f"Floor(10%) **{sim.p10:.1f}**  ·  "
+                            f"Median **{sim.p50:.1f}**  ·  "
+                            f"Ceil(90%) **{sim.p90:.1f}**  "
+                            f"({sim.n_sims} sims)"
+                        )
+                        # Compare MC floor/ceil to heuristic
+                        heur_floor = getattr(res, "total_floor", 0) or 0
+                        heur_ceil = getattr(res, "total_ceiling", 0) or 0
+                        st.caption(
+                            f"Heuristic floor/ceil was {heur_floor:.0f} / {heur_ceil:.0f} → "
+                            f"MC says {sim.p10:.0f} / {sim.p90:.0f}"
+                        )
+
+                with pt_c2:
+                    if st.button("Stats Guy check", key=f"sg_{idx}_{run_num}"):
+                        with st.spinner("Fetching Stats Guy redraft rankings..."):
+                            try:
+                                players_only = [p for p, _ in res.lineup if p.position != "DST"]
+                                # Prefer adjusted proj for display
+                                class _P:
+                                    pass
+                                wrapped = []
+                                for p in players_only:
+                                    w = _P()
+                                    w.name = p.name
+                                    w.position = p.position
+                                    w.projection = res.player_projections.get(p.dk_id, p.projection)
+                                    wrapped.append(w)
+                                sg_rows = pressure_test_lineup(wrapped)
+                                st.session_state[f"sg_result_{idx}"] = sg_rows
+                            except Exception as e:
+                                st.session_state[f"sg_result_{idx}"] = [{"error": str(e)}]
+
+                    sg_rows = st.session_state.get(f"sg_result_{idx}")
+                    if sg_rows:
+                        if sg_rows and "error" in sg_rows[0]:
+                            st.warning(f"Stats Guy fetch failed: {sg_rows[0]['error']}")
+                        else:
+                            import pandas as _pd
+                            st.caption(
+                                "Stats Guy = market redraft value ranks (not weekly points). "
+                                "Use to spot model vs market disagreements."
+                            )
+                            st.dataframe(
+                                _pd.DataFrame(sg_rows),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
 
                 st.markdown("---")
                 for player, slot in res.lineup:

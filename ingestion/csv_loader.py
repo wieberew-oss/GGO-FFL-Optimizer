@@ -65,14 +65,22 @@ def _validate_columns(df: pd.DataFrame) -> None:
         )
 
 
-def load_from_dataframe(df: pd.DataFrame) -> list:
-    """Parse an already-loaded DataFrame into a list of Player objects."""
+def load_from_dataframe(df: pd.DataFrame) -> tuple:
+    """
+    Parse an already-loaded DataFrame into a list of Player objects.
+    Returns (players, skipped_info) where skipped_info is a list of
+    (row_index, reason) for any rows that could not be parsed.
+    """
     _validate_columns(df)
 
     players = []
-    for _, row in df.iterrows():
+    skipped = []
+    for idx, row in df.iterrows():
         try:
             name = str(row["Name"]).strip()
+            if not name or name.lower() == "nan":
+                skipped.append((idx, "empty name"))
+                continue
             dk_id = int(row["ID"])
             position = str(row["Position"]).strip()
             roster_slots = _parse_roster_slots(str(row["Roster Position"]).strip())
@@ -106,20 +114,20 @@ def load_from_dataframe(df: pd.DataFrame) -> list:
             )
             players.append(player)
         except Exception as e:
-            # Skip malformed rows but don't crash the whole load
+            skipped.append((idx, str(e)))
             continue
 
-    return players
+    return players, skipped
 
 
-def load_from_file(filepath: str) -> list:
-    """Load players from a CSV file path."""
+def load_from_file(filepath: str) -> tuple:
+    """Load players from a CSV file path. Returns (players, skipped)."""
     df = pd.read_csv(filepath)
     return load_from_dataframe(df)
 
 
-def load_from_upload(uploaded_file) -> list:
-    """Load players from a Streamlit UploadedFile object."""
+def load_from_upload(uploaded_file) -> tuple:
+    """Load players from a Streamlit UploadedFile object. Returns (players, skipped)."""
     df = pd.read_csv(uploaded_file)
     return load_from_dataframe(df)
 
@@ -142,8 +150,8 @@ def load_from_url(url: str, timeout: int = 10) -> tuple:
         resp = requests.get(url, headers=headers, timeout=timeout)
         resp.raise_for_status()
         df = pd.read_csv(io.StringIO(resp.text))
-        players = load_from_dataframe(df)
-        return players, None
+        players, skipped = load_from_dataframe(df)
+        return players, None if not skipped else f"Loaded with {len(skipped)} skipped rows"
     except requests.exceptions.HTTPError as e:
         return None, f"HTTP error fetching CSV: {e}"
     except requests.exceptions.ConnectionError:

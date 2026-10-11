@@ -334,3 +334,105 @@ def get_game_context(
         "is_home":       is_home,
         "implied_total": implied,
     }
+
+
+# ---------------------------------------------------------------------------
+# Defense vs position (fantasy points allowed)
+# ---------------------------------------------------------------------------
+def get_latest_completed_week(season: int) -> int:
+    """
+    Highest regular-season week number present in nflverse weekly stats
+    for the given season. Returns 0 if no data.
+    """
+    weekly = fetch_weekly_stats([season])
+    if weekly.empty or "week" not in weekly.columns:
+        return 0
+    df = weekly
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    if df.empty:
+        return 0
+    return int(df["week"].max())
+
+
+def get_points_allowed_by_defense(
+    season: int,
+    max_week: int | None = None,
+    min_week: int = 1,
+    scoring: str = "ppr",
+) -> pd.DataFrame:
+    """
+    Average fantasy points allowed by each defense to each offensive position
+    over weeks min_week..max_week of the given season.
+
+    If max_week is None, uses the latest completed regular-season week.
+
+    Returns a DataFrame with columns:
+        defense, position, pts_allowed, games, rank
+    where rank 1 = most points allowed (softest matchup for the offense).
+    """
+    weekly = fetch_weekly_stats([season])
+    if weekly.empty:
+        return pd.DataFrame()
+
+    df = weekly.copy()
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+
+    if max_week is None:
+        max_week = int(df["week"].max()) if "week" in df.columns and not df.empty else 0
+    if max_week < 1:
+        return pd.DataFrame()
+
+    min_week = max(1, int(min_week))
+    max_week = int(max_week)
+    if min_week > max_week:
+        min_week = max_week
+
+    if "week" in df.columns:
+        df = df[(df["week"] >= min_week) & (df["week"] <= max_week)]
+
+    # Position set we care about for offensive matchups
+    pos_map = {"QB": "QB", "RB": "RB", "FB": "RB", "WR": "WR", "TE": "TE"}
+    if "position" not in df.columns or "opponent_team" not in df.columns:
+        return pd.DataFrame()
+
+    df = df[df["position"].isin(pos_map.keys())].copy()
+    df["pos_group"] = df["position"].map(pos_map)
+
+    # Prefer PPR for DK Classic (reception = 1 pt); fall back to standard
+    pts_col = None
+    if scoring == "ppr" and "fantasy_points_ppr" in df.columns:
+        pts_col = "fantasy_points_ppr"
+    elif "fantasy_points" in df.columns:
+        pts_col = "fantasy_points"
+    elif "fantasy_points_ppr" in df.columns:
+        pts_col = "fantasy_points_ppr"
+
+    if pts_col is None:
+        return pd.DataFrame()
+
+    df = df.dropna(subset=[pts_col, "opponent_team"])
+    df["opponent_team"] = df["opponent_team"].apply(lambda t: normalize_team(str(t), "to_nfl"))
+
+    # Sum all players at that position against each defense each week,
+    # then average across weeks. Using groupby week first avoids double-counting
+    # when multiple WRs face the same defense in one game.
+    by_game = (
+        df.groupby(["opponent_team", "pos_group", "week"], as_index=False)[pts_col]
+        .sum()
+        .rename(columns={pts_col: "pts"})
+    )
+    agg = (
+        by_game.groupby(["opponent_team", "pos_group"], as_index=False)
+        .agg(pts_allowed=("pts", "mean"), games=("week", "nunique"))
+        .rename(columns={"opponent_team": "defense", "pos_group": "position"})
+    )
+
+    # Rank within position: 1 = most pts allowed (softest for offense)
+    agg["rank"] = (
+        agg.groupby("position")["pts_allowed"]
+        .rank(ascending=False, method="min")
+        .astype(int)
+    )
+    return agg.sort_values(["position", "rank"]).reset_index(drop=True)
