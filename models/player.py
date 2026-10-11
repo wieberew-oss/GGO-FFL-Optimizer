@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -9,7 +9,7 @@ class Player:
     name: str
     dk_id: int
     position: str          # Primary DK position: QB, RB, WR, TE, DST
-    roster_slots: list     # Eligible slots, e.g. ["RB", "FLEX"]
+    roster_slots: List[str]  # Eligible slots, e.g. ["RB", "FLEX"]
     salary: int
     team: str
     opponent: str          # Derived from Game Info
@@ -23,11 +23,18 @@ class Player:
     value: Optional[float] = field(default=None)
 
     def __post_init__(self):
-        # Compute value (pts per $1000 of salary) whenever projection is set
+        self._recompute_value()
+
+    def _recompute_value(self) -> None:
         if self.salary and self.salary > 0:
             self.value = round(self.projection / (self.salary / 1000), 3)
         else:
             self.value = 0.0
+
+    def update_projection(self, new_proj: float) -> None:
+        """Update projection and recompute value."""
+        self.projection = new_proj
+        self._recompute_value()
 
     @property
     def is_available(self) -> bool:
@@ -43,6 +50,13 @@ class Player:
         """Check whether this player is eligible for a given roster slot."""
         return slot in self.roster_slots
 
+    @property
+    def game_key(self) -> str:
+        """Short matchup key used for the multi-game constraint (e.g. 'DET@ARI')."""
+        if not self.game_info:
+            return self.team or "UNK"
+        return self.game_info.split()[0]
+
     def to_dict(self) -> dict:
         return {
             "Name": self.name,
@@ -51,7 +65,10 @@ class Player:
             "Opponent": self.opponent,
             "Salary": self.salary,
             "Projection": self.projection,
+            "Floor": self.floor,
+            "Ceiling": self.ceiling,
             "Value": self.value,
             "Status": self.status if self.status else "OK",
             "Slots": "/".join(self.roster_slots),
+            "Game": self.game_key,
         }
