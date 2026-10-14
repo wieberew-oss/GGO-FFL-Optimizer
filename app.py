@@ -24,6 +24,22 @@ from optimization.optimizer import optimize, optimize_multiple_lineups, effectiv
 from data.nflverse import is_available as nfl_available, clear_cache
 from models.projections import enrich_players, projection_math
 from data.defenses import get_opponent_defensive_factor, get_matchup_detail, clear_defense_cache
+from data.opportunity import (
+    detect_role_elevations,
+    role_elevation_multipliers,
+    combine_multipliers,
+    DEFAULT_BOOST,
+    MIN_BOOST,
+    MAX_BOOST,
+)
+from data.backup_qb import (
+    detect_backup_qb_starts,
+    backup_qb_multipliers,
+    DEFAULT_WR_TE_DISCOUNT,
+)
+from data.weather import weather_for_team, weather_pass_delta_for_game, clear_weather_cache
+from data.stadiums import is_indoor
+from data.game_script import game_script_multipliers, team_spread_from_stats, script_label, DEFAULT_THRESHOLD
 from models.monte_carlo import simulate_lineup
 from data.statsguy import pressure_test_lineup, clear_statsguy_cache
 
@@ -259,6 +275,7 @@ with st.sidebar:
         if clear_nfl_btn:
             clear_cache()
             clear_defense_cache()
+            clear_weather_cache()
             st.session_state.nfl_loaded = False
             st.session_state.enriched_stats = {}
             st.toast("Cache cleared")
@@ -318,6 +335,32 @@ with st.sidebar:
         ),
     )
 
+    st.markdown("#### 📈 Role Elevation Opportunity")
+    apply_role_elevation = st.toggle(
+        "Apply role-elevation boost",
+        value=False,
+        help=(
+            "When a higher-usage teammate at the same position (RB/WR/TE) is OUT or IR, "
+            "boost the next man up's projection. Uses DK injury status + usage rank from "
+            "nflverse snaps/carries/targets (falls back to DK averages)."
+        ),
+    )
+    role_boost_pct = st.slider(
+        "Role elevation boost %",
+        min_value=int(MIN_BOOST * 100),
+        max_value=int(MAX_BOOST * 100),
+        value=int(DEFAULT_BOOST * 100),
+        step=5,
+        disabled=not apply_role_elevation,
+        help="Added to projection for elevated backups (25–50%). Default 35%.",
+    )
+    role_include_q = st.checkbox(
+        "Treat Questionable (Q) as unavailable for elevation",
+        value=False,
+        disabled=not apply_role_elevation,
+        help="Aggressive mode: also elevate when the player above them is only Q.",
+    )
+
     strategy = st.selectbox(
         "Strategy",
         options=list(STRATEGY_LABELS.keys()),
@@ -333,9 +376,70 @@ with st.sidebar:
 
     with st.expander("Advanced constraints"):
         require_min_games = st.number_input("Min distinct games (Classic rule)", 1, 5, 2)
-        stack_qb = st.checkbox("Force QB + same-team WR/TE stack", value=False)
+        stack_mode = st.selectbox(
+            "Game stack mode",
+            options=["none", "qb_wr", "qb_2wr", "qb_wr_te"],
+            format_func=lambda m: {
+                "none": "No forced stack",
+                "qb_wr": "QB + 1 same-team WR/TE",
+                "qb_2wr": "QB + 2 same-team WRs",
+                "qb_wr_te": "QB + WR + TE (same team)",
+            }[m],
+            help=(
+                "QB+WR+TE is useful when the TE is mid-tier+ and the opponent allows TE production. "
+                "QB+2WR leans into shootout pass volume."
+            ),
+        )
+        stack_qb = stack_mode != "none"  # legacy flag for optimizer
         max_team = st.number_input("Max players from one team (0 = no limit)", 0, 5, 0)
         uniqueness_penalty = st.slider("Diversity penalty (pts)", 0.0, 15.0, 5.0, 0.5)
+
+    st.markdown("#### 🎛️ Situational toggles")
+    apply_backup_qb = st.toggle(
+        "Backup QB suppression",
+        value=False,
+        help="When a team's top QB is OUT/IR, discount that team's WR/TE and the backup QB.",
+    )
+    backup_discount_pct = st.slider(
+        "Backup-QB pass-catcher discount %",
+        min_value=5,
+        max_value=30,
+        value=int(DEFAULT_WR_TE_DISCOUNT * 100),
+        step=5,
+        disabled=not apply_backup_qb,
+    )
+    backup_include_q = st.checkbox(
+        "Treat QB Questionable as out for backup detection",
+        value=False,
+        disabled=not apply_backup_qb,
+    )
+
+    apply_weather = st.toggle(
+        "Avoid bad weather (outdoor)",
+        value=False,
+        help=(
+            "Open-Meteo for outdoor stadiums only. Indoor/retractable ignored. "
+            "Discounts QB/WR/TE in wind/rain/cold; slight boost to DST (and a small RB tilt)."
+        ),
+    )
+
+    apply_game_script = st.toggle(
+        "Wide-spread adjustments (>7 pts)",
+        value=False,
+        help=(
+            "Favorite by 7+: boost RB, mild pass discount. "
+            "Underdog by 7+: cut RB, mild pass boost (muted vs elite pass D ranks 25–32)."
+        ),
+    )
+    script_threshold = st.slider(
+        "Spread threshold (points)",
+        min_value=6.0,
+        max_value=10.0,
+        value=float(DEFAULT_THRESHOLD),
+        step=0.5,
+        disabled=not apply_game_script,
+        help="Default 7. Applies when |team spread| ≥ this value.",
+    )
 
     player_names_sorted = sorted([p.name for p in players]) if players else []
 
@@ -376,7 +480,7 @@ if not players:
 # Handle generation trigger with explicit lock/exclude passing
 if run_btn:
     with st.spinner(f"Optimizing {n_lineups} lineup(s)..."):
-        matchup_multipliers = {
+        defense_multipliers = {
             p.dk_id: get_matchup_multiplier_and_badge(
                 p.position, p.opponent, use_preseason_def,
                 season=dvp_season, sample_mode=dvp_sample_mode,
@@ -384,6 +488,67 @@ if run_btn:
             )[0]
             for p in players
         }
+        elevations = detect_role_elevations(
+            players,
+            enriched_stats=st.session_state.enriched_stats,
+            include_questionable=bool(role_include_q),
+        )
+        role_mults = role_elevation_multipliers(
+            elevations,
+            enabled=bool(apply_role_elevation),
+            boost=role_boost_pct / 100.0,
+        )
+        bqb_ctx = detect_backup_qb_starts(
+            players,
+            include_questionable=bool(backup_include_q),
+        )
+        bqb_mults = backup_qb_multipliers(
+            players,
+            bqb_ctx,
+            enabled=bool(apply_backup_qb),
+            wr_te_discount=backup_discount_pct / 100.0,
+        )
+        # Weather → approximate multiplier so ILP stays multiplicative
+        weather_mults = {}
+        if apply_weather and projection_mode == "adjusted":
+            for p in players:
+                gi = (p.game_info or "").split()
+                home = gi[0].split("@")[1] if gi and "@" in gi[0] else p.team
+                delta = weather_pass_delta_for_game(home, p.position)
+                if abs(delta) < 0.05:
+                    continue
+                # DST baselines are lower; use a softer floor so a +0.75 delta still moves the needle
+                base = max(float(p.projection or 10.0), 5.0 if p.position == "DST" else 8.0)
+                lo, hi = (0.85, 1.25) if p.position == "DST" else (0.75, 1.15)
+                weather_mults[p.dk_id] = max(lo, min(hi, 1.0 + delta / base))
+
+        # Wide-spread game script (>7 by default)
+        def_ranks = {}
+        if apply_game_script and projection_mode == "adjusted":
+            for p in players:
+                if disable_def:
+                    def_ranks[p.dk_id] = None
+                else:
+                    detail = get_matchup_detail(
+                        p.position, p.opponent,
+                        use_preseason=use_preseason_def,
+                        season=dvp_season,
+                        sample_mode=dvp_sample_mode,
+                        last_n=dvp_last_n,
+                    )
+                    def_ranks[p.dk_id] = detail.get("rank")
+        script_mults = game_script_multipliers(
+            players,
+            st.session_state.enriched_stats,
+            enabled=bool(apply_game_script) and projection_mode == "adjusted",
+            threshold=float(script_threshold),
+            def_rank_by_player=def_ranks,
+        )
+
+        matchup_multipliers = combine_multipliers(defense_multipliers, role_mults)
+        matchup_multipliers = combine_multipliers(matchup_multipliers, bqb_mults)
+        matchup_multipliers = combine_multipliers(matchup_multipliers, weather_mults)
+        matchup_multipliers = combine_multipliers(matchup_multipliers, script_mults)
         use_adjusted_projection = projection_mode == "adjusted"
         common_kwargs = dict(
             strategy=strategy,
@@ -396,6 +561,7 @@ if run_btn:
             projection_mode=projection_mode,
             require_min_games=int(require_min_games),
             stack_qb_with_receiver=stack_qb,
+            stack_mode=stack_mode,
             max_from_same_team=int(max_team) if max_team > 0 else None,
             uniqueness_penalty=float(uniqueness_penalty),
         )
@@ -436,12 +602,16 @@ with tab_pool:
            * **🟢 Soft Matchup:** Up to a **+12% boost** facing bottom-tier units against that position.
            * **🟡 Neutral Matchup:** **1.0x baseline** multiplier.
            * **🔴 Tough Matchup:** Up to a **-12% discount** facing top-tier shutdown defenses.
+        5. **Role Elevation Opportunity (optional):** If a higher-usage teammate at RB/WR/TE is **OUT/IR**
+           (optionally **Q**), the next man up gets a configurable **+25–50%** projection boost when the
+           sidebar toggle is on. Detected from DK injury status + usage rank (carries/targets/snaps).
 
         The **Math** column shows the arithmetic used for each projection. The displayed blend splits
-        are hand-set heuristics, not weights learned from a backtest. The **Vegas Δ** and **Defense Δ** columns show each factor's separate point change.
+        are hand-set heuristics, not weights learned from a backtest. The **Vegas Δ**, **Defense Δ**,
+        and **Role Δ** columns show each factor's separate point change.
           Vegas Δ is the implied-team-total boost only; Defense Δ is the change from applying
-          the matchup multiplier to the projection after enrichment. A dash means Vegas lines
-          were unavailable for that game.
+          the matchup multiplier; Role Δ is the elevation boost when enabled. A dash means
+          that factor was unavailable or off.
         """)
 
     latest_lineup = st.session_state.lineup_history[0] if st.session_state.lineup_history else None
@@ -470,10 +640,40 @@ with tab_pool:
         filtered_players = [p for p in filtered_players if p.team in team_filter]
     filtered_players = [p for p in filtered_players if sal_min <= p.salary <= sal_max]
 
+    # Role-elevation map (always detect for badges; boost only when toggle on)
+    pool_elevations = detect_role_elevations(
+        players,
+        enriched_stats=st.session_state.enriched_stats,
+        include_questionable=bool(role_include_q) if apply_role_elevation else False,
+    )
+    # When toggle is off, still show conservative OUT/IR elevations for visibility
+    if not apply_role_elevation:
+        pool_elevations = detect_role_elevations(
+            players,
+            enriched_stats=st.session_state.enriched_stats,
+            include_questionable=False,
+        )
+    role_mults_pool = role_elevation_multipliers(
+        pool_elevations,
+        enabled=bool(apply_role_elevation) and projection_mode != "dk_only",
+        boost=role_boost_pct / 100.0,
+    )
+
+    opp_only = st.checkbox(
+        "Show role-elevation opportunities only",
+        value=False,
+        key="pool_opp_only",
+        help="Filter the pool to RB/WR/TE flagged because a higher-usage teammate is unavailable.",
+    )
+    if opp_only:
+        filtered_players = [p for p in filtered_players if p.dk_id in pool_elevations]
+
     pool_rows = []
     for p in filtered_players:
         ps = st.session_state.enriched_stats.get(p.dk_id)
         in_lineup_tag = "🏈 In Lineup" if p.dk_id in picked_ids else ""
+        elev = pool_elevations.get(p.dk_id)
+        role_mult = role_mults_pool.get(p.dk_id, 1.0)
 
         if disable_def or projection_mode == "dk_only":
             matchup_detail = {
@@ -500,15 +700,19 @@ with tab_pool:
             final_adj_proj = p.projection
             vegas_delta = "Not applied"
             defense_delta = "Not applied"
+            role_delta = "Not applied"
             matchup_badge = "Not applied"
             def_rank_str = "—"
             def_pts_str = "—"
         else:
-            final_adj_proj = effective_projection(p, st.session_state.enriched_stats, matchup_mult)
+            # Defense applied first, then role elevation (when enabled)
+            after_def = effective_projection(p, st.session_state.enriched_stats, matchup_mult)
+            final_adj_proj = after_def * role_mult
             vegas_adjustment = getattr(ps, "vegas_adjustment", None) if ps else None
             vegas_delta = f"{vegas_adjustment:+.1f}" if vegas_adjustment is not None else "—"
             base_adj_proj = effective_projection(p, st.session_state.enriched_stats)
-            defense_delta = f"{final_adj_proj - base_adj_proj:+.1f}"
+            defense_delta = f"{after_def - base_adj_proj:+.1f}"
+            role_delta = f"{final_adj_proj - after_def:+.1f}" if role_mult != 1.0 else "—"
             # Rank 1 = softest (most pts allowed); 32 = toughest
             if def_rank is not None:
                 def_rank_str = f"{def_rank}/32"
@@ -519,6 +723,12 @@ with tab_pool:
                 def_pts_str = f"{def_pts:.1f}{g_suffix}"
             else:
                 def_pts_str = "—"
+
+        role_badge = elev.to_badge() if elev else "—"
+        role_note = elev.to_short() if elev else "—"
+        math_extra = ""
+        if role_mult != 1.0:
+            math_extra = f"; x role {role_mult:.2f} = {final_adj_proj:.1f}"
 
         row_dict = {
             "Name": p.name,
@@ -534,9 +744,12 @@ with tab_pool:
                 ps,
                 matchup_mult if projection_mode != "dk_only" else 1.0,
                 adjustments_enabled=projection_mode != "dk_only",
-            ),
+            ) + math_extra,
             "Vegas Δ": vegas_delta,
             "Defense Δ": defense_delta,
+            "Role Δ": role_delta,
+            "Role OPP": role_badge,
+            "Elevated because": role_note,
             "Matchup": matchup_badge,
             "Def Rank": def_rank_str,
             "Def Pts/G": def_pts_str,
@@ -576,6 +789,12 @@ with tab_pool:
             ),
             "Vegas Δ": st.column_config.TextColumn("Vegas Δ", help="Point change from implied team total; — means no usable line."),
             "Defense Δ": st.column_config.TextColumn("Defense Δ", help="Point change from the opponent matchup multiplier."),
+            "Role Δ": st.column_config.TextColumn(
+                "Role Δ",
+                help="Point change from role-elevation boost when a higher-usage teammate is OUT/IR (toggle in sidebar).",
+            ),
+            "Role OPP": st.column_config.TextColumn("Role OPP", width=80, help="🟢 OPP = elevated backup due to injured teammate above them."),
+            "Elevated because": st.column_config.TextColumn("Elevated because", width=160),
             "Matchup": st.column_config.TextColumn("Matchup vs Def", width=110),
             "Def Rank": st.column_config.TextColumn(
                 "Def Rank", width=80,
@@ -601,7 +820,17 @@ with tab_pool:
 
     l_count = len(st.session_state.lock_names)
     e_count = len(st.session_state.exclude_names)
-    st.caption(f"Showing {len(filtered_players)} of {len(players)} players  |  🔒 Locked: {l_count}  |  ❌ Excluded: {e_count}  |  {DATA_SOURCE_LEGEND}")
+    opp_count = len(pool_elevations)
+    boost_note = (
+        f"Role boost ON (+{role_boost_pct}%)"
+        if apply_role_elevation and projection_mode != "dk_only"
+        else "Role boost OFF (badges still shown)"
+    )
+    st.caption(
+        f"Showing {len(filtered_players)} of {len(players)} players  |  "
+        f"🟢 Role OPP flagged: {opp_count}  |  {boost_note}  |  "
+        f"🔒 Locked: {l_count}  |  ❌ Excluded: {e_count}  |  {DATA_SOURCE_LEGEND}"
+    )
 
 # ---------------------------------------------------------------------------
 # Lineup tab (Lineup History Vault & Comparison)

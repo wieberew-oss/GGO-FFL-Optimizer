@@ -65,6 +65,11 @@ class PlayerStats:
     implied_total: Optional[float] = None
     vegas_adjustment: Optional[float] = None
 
+    # Red-zone / TD involvement proxy (from TD rates on volume)
+    rz_score: Optional[float] = None  # 0–1ish involvement signal
+    avg_receiving_tds: Optional[float] = None
+    avg_rushing_tds: Optional[float] = None
+
     # Adjusted projection (output)
     adjusted_projection: Optional[float] = None
     floor: Optional[float] = None
@@ -181,6 +186,9 @@ def projection_math(
         elif player.position == "TE" and stats.avg_target_share is not None:
             bonus = max(0.0, (stats.avg_target_share - 0.12) * 8.0)
             terms.append(f"target {bonus:+.1f}")
+        rz = _rz_bonus(player.position, stats)
+        if rz > 0:
+            terms.append(f"RZ/TD {rz:+.1f}")
 
     base_projection = (
         stats.adjusted_projection
@@ -207,6 +215,36 @@ def _adjust_qb(base: float, stats: PlayerStats) -> float:
     return round(base * 0.40 + recent * 0.60 + vegas + home, 2)
 
 
+def _rz_bonus(position: str, stats: PlayerStats) -> float:
+    """
+    Small additive bonus from TD involvement as a red-zone proxy.
+    True RZ target/carry shares need play-by-play; until then we use
+    TD rate on volume (receiving TDs per target, rushing TDs per carry).
+    """
+    bonus = 0.0
+    if position in {"WR", "TE"}:
+        tds = stats.avg_receiving_tds
+        tgts = stats.avg_targets
+        if tds is not None and tgts is not None and tgts >= 3:
+            rate = float(tds) / float(tgts)
+            # ~0.08+ TD/target is strong RZ/end-zone usage
+            bonus = max(0.0, (rate - 0.04) * 25.0)
+            bonus = min(bonus, 2.5)
+        elif tds is not None and tds >= 0.5:
+            bonus = min(float(tds) * 1.2, 2.0)
+    elif position == "RB":
+        rtds = stats.avg_rushing_tds
+        carries = stats.avg_carries
+        rtds = rtds or 0.0
+        rec_tds = stats.avg_receiving_tds or 0.0
+        if carries is not None and carries >= 5:
+            rate = float(rtds) / float(carries)
+            bonus = max(0.0, (rate - 0.03) * 20.0)
+            bonus = min(bonus, 2.0)
+        bonus += min(float(rec_tds) * 1.0, 1.0)
+    return round(bonus, 2)
+
+
 def _adjust_rb(base: float, stats: PlayerStats) -> float:
     recent = stats.recent_fantasy_pts
     if recent is None:
@@ -216,7 +254,8 @@ def _adjust_rb(base: float, stats: PlayerStats) -> float:
     snap_bonus = 0.0
     if stats.avg_snap_pct is not None:
         snap_bonus = max(0.0, (stats.avg_snap_pct - 0.50) * 3.0)
-    return round(base * 0.35 + recent * 0.65 + vegas + home + snap_bonus, 2)
+    rz = _rz_bonus("RB", stats)
+    return round(base * 0.35 + recent * 0.65 + vegas + home + snap_bonus + rz, 2)
 
 
 def _adjust_wr(base: float, stats: PlayerStats) -> float:
@@ -231,7 +270,8 @@ def _adjust_wr(base: float, stats: PlayerStats) -> float:
     wopr_bonus = 0.0
     if stats.avg_wopr is not None:
         wopr_bonus = max(0.0, (stats.avg_wopr - 0.50) * 2.0)
-    return round(base * 0.30 + recent * 0.60 + vegas + home + tgt_bonus + wopr_bonus, 2)
+    rz = _rz_bonus("WR", stats)
+    return round(base * 0.30 + recent * 0.60 + vegas + home + tgt_bonus + wopr_bonus + rz, 2)
 
 
 def _adjust_te(base: float, stats: PlayerStats) -> float:
@@ -243,7 +283,8 @@ def _adjust_te(base: float, stats: PlayerStats) -> float:
     tgt_bonus = 0.0
     if stats.avg_target_share is not None:
         tgt_bonus = max(0.0, (stats.avg_target_share - 0.12) * 8.0)
-    return round(base * 0.35 + recent * 0.65 + vegas + home + tgt_bonus, 2)
+    rz = _rz_bonus("TE", stats)
+    return round(base * 0.35 + recent * 0.65 + vegas + home + tgt_bonus + rz, 2)
 
 
 
@@ -427,6 +468,8 @@ def enrich_players(
             stats.avg_passing_tds = _safe_float(row, "avg_passing_tds")
             stats.avg_interceptions = _safe_float(row, "avg_interceptions")
             stats.games_played = int(row["games_played"]) if "games_played" in row else None
+            # RZ involvement proxy (0–~1+)
+            stats.rz_score = _rz_bonus(player.position, stats)
 
         # --- Snap % match ---
         snap_row = _find_snap_row(player.name, player.team, snap_data)

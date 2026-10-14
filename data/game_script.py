@@ -8,8 +8,13 @@ Heavy favorite (team spread <= -threshold):
 
 Heavy underdog (team spread >= +threshold):
   RB discounted (run abandoned); QB/WR/TE mildly elevated (pass to catch up).
+<<<<<<< HEAD
   Pass boost is muted when opponent is a top-tier pass defense
   (DvP rank 25-32 = toughest).
+=======
+  Pass boost is cut in half when opponent is a top-tier pass defense
+  (rank 1–8 vs that position by fantasy pts allowed).
+>>>>>>> 371f835 (feat: full situational model + app wiring)
 """
 
 from __future__ import annotations
@@ -53,8 +58,19 @@ def game_script_multipliers(
     Return dk_id -> multiplier for wide-spread script effects.
 
     def_rank_by_player: optional map of player dk_id -> opponent DvP rank
+<<<<<<< HEAD
       (1 = softest / most pts allowed, 32 = toughest). Underdog pass boost is
       muted when rank >= 25 (top-tier shutdown pass defense).
+=======
+      (1 = softest / most pts allowed, 32 = toughest). Used to mute underdog
+      pass boost vs elite pass defenses (rank 1-8 treated as elite for muting
+      when rank is high toughness... wait: rank 1 softest, rank 32 toughest).
+
+    Elite pass D = high rank number (25–32) OR we use rank >= 25 as tough.
+    Actually user said "top tier pass defense" = tough = high rank in our system
+    where 1 = softest. So rank >= 25 (or <= 8 if inverted). Our get_matchup_detail
+    uses 1 = softest. Top-tier shutdown = rank 25-32.
+>>>>>>> 371f835 (feat: full situational model + app wiring)
     """
     if not enabled:
         return {}

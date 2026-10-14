@@ -220,6 +220,7 @@ def optimize(
     projection_mode: str = "adjusted",
     require_min_games: int = 2,
     stack_qb_with_receiver: bool = False,
+    stack_mode: str = "none",
     max_from_same_team: Optional[int] = None,
     previously_used_ids: Optional[Set[int]] = None,
     uniqueness_penalty: float = 0.0,
@@ -227,10 +228,14 @@ def optimize(
     """
     Find the optimal lineup given the player pool and constraints.
 
-    New parameters
-    --------------
+    Parameters
+    ----------
     require_min_games       : Minimum number of distinct games (Classic rule = 2)
-    stack_qb_with_receiver  : If True, force at least one WR/TE from the same team as the QB
+    stack_qb_with_receiver  : Legacy flag — treated as stack_mode='qb_wr' if True
+    stack_mode              : 'none' | 'qb_wr' | 'qb_2wr' | 'qb_wr_te'
+        qb_wr     — QB + ≥1 same-team WR/TE
+        qb_2wr    — QB + ≥2 same-team WRs
+        qb_wr_te  — QB + ≥1 same-team WR + ≥1 same-team TE
     max_from_same_team      : Optional hard cap on players from one NFL team
     previously_used_ids     : Player IDs already used in prior lineups (for diversity)
     uniqueness_penalty      : Soft penalty subtracted from objective for previously used players
@@ -378,20 +383,47 @@ def optimize(
 
         prob += pulp.lpSum(game_vars) >= require_min_games, "Min_Games"
 
-    # ----- Optional stacking: QB + at least one pass-catcher -----
-    if stack_qb_with_receiver:
+    # ----- Optional stacking: game / pass-game correlation -----
+    # Normalize legacy flag
+    mode = (stack_mode or "none").lower()
+    if stack_qb_with_receiver and mode == "none":
+        mode = "qb_wr"
+
+    if mode in {"qb_wr", "qb_2wr", "qb_wr_te"}:
         qb_indices = [i for i, p in enumerate(pool) if p.position == "QB"]
         for qi in qb_indices:
             qb = pool[qi]
-            same_team_receivers = [
+            same_wrs = [
                 i for i, p in enumerate(pool)
-                if p.team == qb.team and p.position in {"WR", "TE"}
+                if p.team == qb.team and p.position == "WR"
             ]
-            if same_team_receivers:
-                # If this QB is selected, at least one same-team WR/TE must be selected
+            same_tes = [
+                i for i, p in enumerate(pool)
+                if p.team == qb.team and p.position == "TE"
+            ]
+            same_recv = same_wrs + same_tes
+
+            if mode == "qb_wr" and same_recv:
+                # QB + at least one same-team WR/TE
                 prob += (
-                    pulp.lpSum(x[i] for i in same_team_receivers) >= x[qi],
-                    f"Stack_QB_{qi}",
+                    pulp.lpSum(x[i] for i in same_recv) >= x[qi],
+                    f"Stack_QB_WR_{qi}",
+                )
+            elif mode == "qb_2wr" and len(same_wrs) >= 2:
+                # QB + at least two same-team WRs
+                prob += (
+                    pulp.lpSum(x[i] for i in same_wrs) >= 2 * x[qi],
+                    f"Stack_QB_2WR_{qi}",
+                )
+            elif mode == "qb_wr_te" and same_wrs and same_tes:
+                # QB + ≥1 WR + ≥1 TE same team
+                prob += (
+                    pulp.lpSum(x[i] for i in same_wrs) >= x[qi],
+                    f"Stack_QB_WR1_{qi}",
+                )
+                prob += (
+                    pulp.lpSum(x[i] for i in same_tes) >= x[qi],
+                    f"Stack_QB_TE_{qi}",
                 )
 
     # ----- Optional max players from same team -----
@@ -486,6 +518,7 @@ def optimize_multiple_lineups(
     lock_names: Optional[Set[str]] = None,
     exclude_injured: bool = True,
     exclude_questionable: bool = False,
+    stack_mode: str = "none",
     enriched_stats: Optional[dict] = None,
     matchup_multipliers: Optional[dict] = None,
     projection_mode: str = "adjusted",
@@ -513,6 +546,7 @@ def optimize_multiple_lineups(
             projection_mode=projection_mode,
             require_min_games=require_min_games,
             stack_qb_with_receiver=stack_qb_with_receiver,
+            stack_mode=stack_mode,
             max_from_same_team=max_from_same_team,
             previously_used_ids=used_ids,
             uniqueness_penalty=uniqueness_penalty,
